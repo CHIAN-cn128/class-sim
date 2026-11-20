@@ -4,7 +4,7 @@
 // =====================================================================
 window.APP_CONFIG = {
   // Render 部署完成後的網址，例如 "https://class-sim-api.onrender.com"（結尾不要加 /）
-  API_BASE: "https://YOUR-SERVICE.onrender.com",
+  API_BASE: "https://class-sim-api.onrender.com",
 
   // 網頁多久向 API 查詢一次最新結果（毫秒）
   POLL_MS: 5000,
