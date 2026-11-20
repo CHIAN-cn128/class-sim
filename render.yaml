@@ -1,0 +1,31 @@
+# Render Blueprint：Render 後台 → New → Blueprint → 選這個 repo，就會照這裡建立服務
+services:
+  - type: web
+    name: class-sim-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: SUPABASE_URL
+        sync: false          # 建立時 Render 會要你手動填
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false          # 例如 https://你的帳號.github.io
+      - key: CONTROL_TOKEN
+        sync: false          # 留空 = 任何人都能按開始/停止
+      - key: EVENT_TABLE
+        value: event         # 老師前端寫入的生產事件表名稱
+      - key: INTERVAL_SECONDS
+        value: "5"
+      - key: MAX_MINUTES
+        value: "120"
+      - key: ONLY_ON_NEW_DATA
+        value: "false"
+      - key: AUTO_RESUME
+        value: "true"

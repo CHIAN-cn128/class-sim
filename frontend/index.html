@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>椅子產線 Python 模擬</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>椅子產線 Python 模擬</h1>
+      <p class="sub">GitHub Pages → Render（Python）→ Supabase event 表</p>
+    </div>
+    <div id="conn" class="pill pill-wait">連線中…</div>
+  </header>
+
+  <main>
+    <!-- 目標一 -->
+    <section class="card">
+      <h2><span class="tag">目標一</span>Python 說的話</h2>
+      <p class="hint">按下按鈕，網頁會呼叫雲端上的 Python，把它回傳的文字顯示在下面。</p>
+      <button id="btn-hello" class="btn">呼叫 Python</button>
+      <div id="hello-out" class="console">（尚未呼叫）</div>
+    </section>
+
+    <!-- 模擬控制 -->
+    <section class="card">
+      <h2><span class="tag tag-2">控制</span>模擬開始 / 停止</h2>
+      <div class="status-row">
+        <span id="run-badge" class="pill pill-off">未執行</span>
+        <span id="run-info" class="muted"></span>
+      </div>
+      <div class="row">
+        <button id="btn-start" class="btn">開始模擬</button>
+        <button id="btn-stop" class="btn btn-ghost">停止模擬</button>
+        <button id="btn-once" class="btn btn-ghost">只跑一輪</button>
+      </div>
+      <div id="token-row" class="row hidden">
+        <label>控制碼 <input id="token" type="password" autocomplete="off" placeholder="老師提供"></label>
+      </div>
+      <div id="ctrl-msg" class="muted"></div>
+    </section>
+
+    <!-- 資料來源 -->
+    <section class="card">
+      <h2><span class="tag tag-3">資料</span>event 表（Python 讀到的）</h2>
+      <dl class="kv" id="source">
+        <dt>事件筆數</dt><dd>—</dd>
+        <dt>組別數</dt><dd>—</dd>
+        <dt>終點站</dt><dd>—</dd>
+        <dt>最後完工</dt><dd>—</dd>
+      </dl>
+      <p class="muted small">學生用原本的掃碼前端開工／完工，資料寫入 event 表，Python 下一輪就會讀到。</p>
+    </section>
+
+    <!-- 目標二 -->
+    <section class="card wide">
+      <div class="head-row">
+        <h2><span class="tag">目標二</span>Python 計算結果</h2>
+        <div id="batch-tabs" class="tabs"></div>
+      </div>
+      <p class="muted" id="result-meta">等待第一筆結果…（按「開始模擬」或「只跑一輪」）</p>
+      <div class="stats" id="stats"></div>
+
+      <h3>各組產線表現 <span class="muted small">（點一列看該組各站作業時間）</span></h3>
+      <div class="tbl-wrap">
+        <table class="tbl" id="lines">
+          <thead><tr>
+            <th>組別</th><th class="n">完成件數</th><th class="n">總時間</th><th class="n">產出率（件/時）</th>
+            <th class="n">平均流程時間</th><th>瓶頸站</th><th class="n">平衡效率</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="split">
+        <div>
+          <h3 id="bars-title">各站平均作業秒數</h3>
+          <div id="bars" class="bars"></div>
+        </div>
+        <div>
+          <h3>最新完工事件</h3>
+          <table class="tbl"><thead><tr><th>組別</th><th>產品</th><th>工站</th><th class="n">秒數</th><th class="n">完工</th></tr></thead>
+            <tbody id="latest"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <h2>Python 輸出紀錄</h2>
+      <ul id="log" class="console log"></ul>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
