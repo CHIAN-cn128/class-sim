@@ -16,6 +16,11 @@
     <div id="conn" class="pill pill-wait">連線中…</div>
   </header>
 
+  <div id="storage-alert" class="alert hidden">
+    <span id="storage-alert-text"></span>
+    <button type="button" id="btn-alert-delete" class="btn btn-danger">選擇要刪除的 Test</button>
+  </div>
+
   <main>
     <!-- 目標一 -->
     <section class="card">
@@ -41,16 +46,19 @@
         <label>控制碼 <input id="token" type="password" autocomplete="off" placeholder="老師提供"></label>
       </div>
       <div id="ctrl-msg" class="muted"></div>
+      <div id="storage" class="muted small storage"></div>
+      <button type="button" id="btn-manage" class="linkbtn">管理資料空間（刪除整個 Test）</button>
     </section>
 
     <!-- 資料來源 -->
     <section class="card">
-      <h2><span class="tag tag-3">資料</span>event 表（Python 讀到的）</h2>
+      <h2><span class="tag tag-3">資料</span><span id="source-title">這次 Test 的資料</span></h2>
       <dl class="kv" id="source">
         <dt>事件筆數</dt><dd>—</dd>
         <dt>組別數</dt><dd>—</dd>
         <dt>終點站</dt><dd>—</dd>
         <dt>最後完工</dt><dd>—</dd>
+        <dt>整張 event 表</dt><dd id="table-count">—</dd>
       </dl>
       <p class="muted small">學生用原本的掃碼前端開工／完工，資料寫入 event 表，Python 下一輪就會讀到。</p>
     </section>
@@ -59,12 +67,19 @@
     <section class="card wide">
       <div class="head-row">
         <h2><span class="tag">目標二</span>Python 計算結果</h2>
-        <div id="batch-tabs" class="tabs"></div>
+        <div class="pickers">
+          <label>測試批次
+            <select id="sel-batch"></select>
+          </label>
+          <label>組別
+            <select id="sel-group"></select>
+          </label>
+        </div>
       </div>
       <p class="muted" id="result-meta">等待第一筆結果…（按「開始模擬」或「只跑一輪」）</p>
       <div class="stats" id="stats"></div>
 
-      <h3>各組產線表現 <span class="muted small">（點一列看該組各站作業時間）</span></h3>
+      <h3 id="lines-title">各組產線表現 <span class="muted small">（點一列或用上方「組別」選單看該組細節）</span></h3>
       <div class="tbl-wrap">
         <table class="tbl" id="lines">
           <thead><tr>
@@ -81,7 +96,7 @@
           <div id="bars" class="bars"></div>
         </div>
         <div>
-          <h3>最新完工事件</h3>
+          <h3 id="latest-title">最新完工事件</h3>
           <table class="tbl"><thead><tr><th>組別</th><th>產品</th><th>工站</th><th class="n">秒數</th><th class="n">完工</th></tr></thead>
             <tbody id="latest"></tbody></table>
         </div>
@@ -93,6 +108,27 @@
       <ul id="log" class="console log"></ul>
     </section>
   </main>
+
+  <!-- 刪除一整個 Test 的視窗 -->
+  <dialog id="del-dialog" class="dlg">
+    <h2>刪除一整個 Test 的資料</h2>
+    <p id="del-usage" class="muted"></p>
+    <label class="fld">要刪除的 Test（由最舊排到最新）
+      <select id="del-batch"></select>
+    </label>
+    <div id="del-info" class="del-info"></div>
+    <div class="row">
+      <button type="button" id="del-backup" class="btn btn-ghost">先下載這個 Test 的備份（CSV）</button>
+    </div>
+    <label class="fld">刪除密碼
+      <input id="del-pw" type="password" autocomplete="off" placeholder="輸入刪除密碼">
+    </label>
+    <div id="del-msg" class="del-msg"></div>
+    <div class="row end">
+      <button type="button" id="del-cancel" class="btn btn-ghost">關閉</button>
+      <button type="button" id="del-ok" class="btn btn-danger">確認刪除</button>
+    </div>
+  </dialog>
 
   <script src="config.js"></script>
   <script src="app.js"></script>

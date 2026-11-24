@@ -39,10 +39,12 @@ input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-r
 .kv dt { color: var(--muted); font-size: 13px; }
 .kv dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .head-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.tab { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line);
-  background: #fff; color: var(--ink); cursor: pointer; }
-.tab.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.pickers { display: flex; gap: 12px; flex-wrap: wrap; }
+.pickers label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+select { font: inherit; font-size: 14px; color: var(--ink); padding: 5px 30px 5px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: #fff; cursor: pointer; min-width: 120px; }
+select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.notice { padding: 14px 16px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); margin: 10px 0; }
 .tbl-wrap { overflow-x: auto; }
 #lines tbody tr { cursor: pointer; }
 #lines tbody tr:hover { background: #f8fafc; }
@@ -80,3 +82,31 @@ input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-r
 .tbl .n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bar .fill.hot { background: var(--bad); }
 .empty { color: var(--muted); font-size: 13px; }
+#lines td, #lines th { white-space: nowrap; }
+.storage { margin-top: 8px; }
+.meter { height: 6px; background: #eef0f3; border-radius: 3px; overflow: hidden; margin: 4px 0; }
+.meter > div { height: 100%; background: var(--ok); }
+.meter.warn > div { background: var(--warn); }
+
+/* 空間不夠的提示 */
+.alert { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin: 16px 28px 0; padding: 12px 16px; border-radius: 10px; background: var(--bad-soft); color: var(--bad);
+  border: 1px solid #f5c2c2; font-weight: 600; }
+.alert.hidden { display: none; }
+@media (max-width: 960px) { .alert { margin: 12px 16px 0; } }
+.btn-danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+.linkbtn { font: inherit; font-size: 12px; background: none; border: 0; padding: 0; color: var(--accent);
+  cursor: pointer; text-decoration: underline; margin-top: 4px; }
+/* 刪除視窗 */
+.dlg { border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; width: min(480px, 92vw);
+  color: var(--ink); box-shadow: 0 20px 50px rgba(15, 23, 42, .25); }
+.dlg::backdrop { background: rgba(15, 23, 42, .45); }
+.dlg h2 { margin-bottom: 6px; }
+.fld { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+.fld select { width: 100%; }
+.del-info { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--warn-soft); color: #7c3d06;
+  font-size: 13px; line-height: 1.7; }
+.del-msg { min-height: 20px; margin-top: 10px; font-size: 13px; }
+.del-msg.err { color: var(--bad); }
+.del-msg.ok { color: var(--ok); }
+.row.end { justify-content: flex-end; margin-top: 14px; }
