@@ -104,19 +104,72 @@ class SupabaseDB:
         return n
 
     # ------------------------------------------------------------------ 模擬結果
-    def insert_result(self, run_id: str, tick: int, message: str, payload: dict) -> dict | None:
+    # sim_results 有兩種列：
+    #   batch = 'TEST3' 之類 → 該次 Test 的完整計算結果（只有那次 Test 有新資料時才新增）
+    #   batch = null         → 每一輪的文字紀錄（很小）
+    def insert_result(self, run_id: str, tick: int, message: str, payload: dict,
+                      batch: str | None = None) -> dict | None:
         rows = self._request("POST", "sim_results", body={
-            "run_id": run_id, "tick": tick, "message": message, "payload": payload,
+            "run_id": run_id, "tick": tick, "message": message, "payload": payload, "batch": batch,
         }, prefer="return=representation")
         return rows[0] if rows else None
 
-    def fetch_results(self, limit: int = 20, run_id: str | None = None,
-                      with_payload: bool = True) -> list[dict]:
-        cols = "*" if with_payload else "id,run_id,tick,message,created_at"
-        params = {"select": cols, "order": "id.desc", "limit": str(limit)}
+    def fetch_log(self, limit: int = 15, run_id: str | None = None) -> list[dict]:
+        """最近幾輪的文字紀錄（不含大資料）"""
+        params = {"select": "id,run_id,tick,message,created_at", "batch": "is.null",
+                  "order": "id.desc", "limit": str(limit)}
         if run_id:
             params["run_id"] = f"eq.{run_id}"
         return self._request("GET", "sim_results", params=params) or []
+
+    def fetch_test_index(self) -> list[dict]:
+        """每個 Test 最新一筆結果的 id（用來做下拉選單、判斷網頁要不要重新下載）"""
+        rows = self._request("GET", "sim_results", params={
+            "select": "id,batch,tick,created_at", "batch": "not.is.null",
+            "order": "id.desc", "limit": "2000",
+        }) or []
+        seen: dict[str, dict] = {}
+        for r in rows:
+            seen.setdefault(r["batch"], r)
+        return list(seen.values())
+
+    def fetch_test_result(self, batch: str) -> dict | None:
+        rows = self._request("GET", "sim_results", params={
+            "select": "*", "batch": f"eq.{batch}", "order": "id.desc", "limit": "1",
+        }) or []
+        return rows[0] if rows else None
+
+    def check_results_schema(self) -> None:
+        """確認已執行 update_v3.sql（sim_results 要有 batch 欄位、要有空間量測函式）"""
+        try:
+            self._request("GET", "sim_results", params={"select": "id,batch", "limit": "1"})
+            self.storage_usage()
+        except DatabaseError as e:
+            raise DatabaseError("資料表還沒更新：請到 Supabase SQL Editor 執行 supabase/update_v3.sql"
+                                f"（{e}）") from e
+
+    # ------------------------------------------------------------------ 空間管理（需要 update_v3.sql 的函式）
+    def storage_usage(self) -> dict[str, dict]:
+        """{"event": {"bytes":..,"rows":..}, "sim_results": {...}} — 原始資料與計算結果各佔多少空間"""
+        rows = self._request("POST", "rpc/storage_usage", body={}) or []
+        return {r["table_name"]: {"bytes": int(r["total_bytes"] or 0), "rows": int(r["row_count"] or 0)}
+                for r in rows}
+
+    def test_usage(self) -> list[dict]:
+        """每一次 Test 各佔多少空間，由最舊的 Test 排到最新"""
+        return self._request("POST", "rpc/test_usage", body={}) or []
+
+    def delete_test_data(self, batch: str) -> dict:
+        """刪除一整個 Test 的所有資料（event 原始資料＋計算結果）。只能在密碼驗證通過後呼叫"""
+        rows = self._request("POST", "rpc/delete_test_data", body={"p_batch": batch}) or []
+        row = rows[0] if rows else {}
+        return {"event_deleted": int(row.get("event_deleted") or 0),
+                "result_deleted": int(row.get("result_deleted") or 0)}
+
+    def delete_old_results(self, batch: str, keep_id: int) -> None:
+        """同一個 Test 有新的計算結果後，舊版本的計算結果就用不到了（只刪計算結果，不碰原始資料）"""
+        self._send("DELETE", "sim_results", params={"batch": f"eq.{batch}", "id": f"lt.{int(keep_id)}"},
+                   prefer="return=minimal")
 
     # ------------------------------------------------------------------ 模擬狀態（只有一列，id = 1）
     def get_status(self) -> dict | None:
