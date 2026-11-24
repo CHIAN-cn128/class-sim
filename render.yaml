@@ -21,6 +21,10 @@ services:
         sync: false          # 留空 = 任何人都能按開始/停止
       - key: EVENT_TABLE
         value: event         # 老師前端寫入的生產事件表名稱
+      - key: DELETE_PASSWORD
+        sync: false          # 刪除一整個 Test 要輸入的密碼（留空 = 不能刪）
+      - key: STORAGE_LIMIT_MB
+        value: "400"         # 空間用量超過這個數字就提示「空間不夠」
       - key: INTERVAL_SECONDS
         value: "5"
       - key: MAX_MINUTES

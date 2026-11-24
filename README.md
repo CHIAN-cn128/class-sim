@@ -42,6 +42,7 @@
 | `backend/check_setup.py` | 在自己電腦檢查 Supabase 是否設定好 |
 | `supabase/event_table.sql` | 建立 `event` 表（**只在自己的新專案執行**） |
 | `supabase/results_tables.sql` | 建立 `sim_results`、`sim_status`（不會動到 event） |
+| `supabase/update_v3.sql` | 更新：每個 Test 獨立存放＋空間用量＋刪除整個 Test 的函式（舊專案要補跑一次） |
 | `data/ie_chair_data.xlsx` / `.csv` | 老師提供的資料（6 組、288 筆） |
 | `render.yaml` | Render 一鍵建立服務 |
 | `.github/workflows/pages.yml` | 自動把 `frontend/` 發佈到 GitHub Pages |
@@ -126,6 +127,13 @@ Python 對 event 表只會讀取，不會修改。表名如果不是 `event`，�
 - **偵測新 insert**：每輪先只查「筆數＋最新完工時間」（很省流量）。`ONLY_ON_NEW_DATA=true` 時，沒有新事件就不重算。
 - **自動停止**：超過 `MAX_MINUTES`（預設 120 分鐘）自動停止。
 - **重啟恢復**：Render 重啟後，若模擬原本在執行且未超過時限，會自動接續同一個 run。
+- **每次 Test 各自獨立**：TEST1～TEST10 的資料各算各的、各存各的，不會混在一起；哪一次 Test 有新資料，就只重算那一次。
+- **空間管理（不會自動刪除）**：每個 Test 只保留一份最新的計算結果。資料空間（event 原始資料＋計算結果）
+  超過 `STORAGE_LIMIT_MB`（預設 400 MB，免費方案上限 500 MB）時，網頁上方會出現紅色「空間不夠」提示。
+  按「選擇要刪除的 Test」→ 選 Test（由最舊排到最新）→（建議先下載 CSV 備份）→ 輸入密碼 → 確認刪除，
+  會一次刪掉那個 Test 的**所有資料**（原始紀錄＋計算結果），無法復原。
+  密碼設在 Render 的 `DELETE_PASSWORD`；沒設定就不能刪。密碼連錯 5 次會鎖定 10 分鐘。
+  （需先在 Supabase SQL Editor 執行 `supabase/update_v3.sql`）
 
 ## 免費方案注意事項
 
