@@ -110,3 +110,60 @@ select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent
 .del-msg.err { color: var(--bad); }
 .del-msg.ok { color: var(--ok); }
 .row.end { justify-content: flex-end; margin-top: 14px; }
+.ctl-test { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin: 4px 0 10px; }
+.btn:disabled { opacity: .4; cursor: not-allowed; filter: none; }
+#others { margin: 2px 0 6px; }
+
+/* ---------- 指標區塊 ---------- */
+:root {
+  --c1: #257de0;   /* 圖表分類色（已通過色盲檢查）：藍 */
+  --c2: #f47230;   /* 橘 */
+  --c3: #00b894;   /* 青 */
+  --c4: #f2a600;   /* 黃 */
+  --rest: #dfe3e8; /* 圓餅圖的「其餘部分」 */
+}
+h3.sec { margin: 18px 0 8px; font-size: 14px; color: var(--ink); font-weight: 600; }
+.stat .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.stat .v.sm { font-size: 18px; }
+.live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  background: var(--ok-soft); color: var(--ok); margin: 6px 0 0; }
+.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.live.idle { background: #eef0f3; color: var(--muted); }
+.live.idle::before { opacity: .5; }
+
+/* 圓餅圖（甜甜圈） */
+.pies { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .pies { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 680px) { .pies { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .pies { grid-template-columns: 1fr; } }
+.pie { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; align-items: center; }
+.pie h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; align-self: flex-start; }
+.pie svg { width: 132px; height: 132px; overflow: visible; }
+.pie svg path, .pie svg circle.seg { cursor: default; transition: opacity .15s; }
+.pie svg:hover path:not(:hover) { opacity: .55; }
+.pie .ctr { font-size: 22px; font-weight: 700; fill: var(--ink); font-variant-numeric: tabular-nums; }
+.pie .ctr-sub { font-size: 11px; fill: var(--muted); }
+.legend { list-style: none; margin: 8px 0 0; padding: 0; width: 100%; font-size: 12px; }
+.legend li { display: grid; grid-template-columns: 10px 1fr auto; gap: 6px; align-items: center; padding: 2px 0; }
+.legend .sw { width: 10px; height: 10px; border-radius: 3px; }
+.legend .lv { font-variant-numeric: tabular-nums; color: var(--ink); }
+.pie .empty { color: var(--muted); font-size: 13px; padding: 40px 0; }
+.tip { position: fixed; z-index: 50; pointer-events: none; background: #1d2330; color: #fff; font-size: 12px;
+  padding: 6px 9px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,.18); white-space: nowrap; }
+
+/* 各站指標表：利用率小長條 */
+.mini { display: grid; grid-template-columns: 90px 52px; gap: 8px; align-items: center; }
+.mini .meter { margin: 0; height: 8px; }
+.mini .meter > div { background: var(--c1); }
+.mini span { font-variant-numeric: tabular-nums; text-align: right; }
+.flag { font-size: 12px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.flag.bn { background: var(--bad-soft); color: var(--bad); }
+.flag.q { background: var(--warn-soft); color: var(--warn); }
+.ok-tag { color: var(--ok); }
+.warn-tag { color: var(--warn); }
+#lines td, #lines th, #st-table td, #st-table th { white-space: nowrap; }
+.stats { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.pie .ctr, .pie .ctr-sub { pointer-events: none; }
+/* 手機版：寬表格自己左右捲動，不要把整張卡片撐寬 */
+.card { min-width: 0; }
+@media (max-width: 960px) { main { grid-template-columns: minmax(0, 1fr); } }

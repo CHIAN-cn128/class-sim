@@ -32,16 +32,20 @@
 
     <!-- 模擬控制 -->
     <section class="card">
-      <h2><span class="tag tag-2">控制</span>模擬開始 / 停止</h2>
+      <h2><span class="tag tag-2">控制</span>模擬開始 / 暫停 / 停止</h2>
+      <label class="ctl-test">控制的 Test
+        <select id="ctl-batch"></select>
+      </label>
       <div class="status-row">
-        <span id="run-badge" class="pill pill-off">未執行</span>
+        <span id="run-badge" class="pill pill-off">已停止</span>
         <span id="run-info" class="muted"></span>
       </div>
       <div class="row">
         <button id="btn-start" class="btn">開始模擬</button>
+        <button id="btn-pause" class="btn btn-ghost">暫停</button>
         <button id="btn-stop" class="btn btn-ghost">停止模擬</button>
-        <button id="btn-once" class="btn btn-ghost">只跑一輪</button>
       </div>
+      <div id="others" class="muted small"></div>
       <div id="token-row" class="row hidden">
         <label>控制碼 <input id="token" type="password" autocomplete="off" placeholder="老師提供"></label>
       </div>
@@ -76,35 +80,53 @@
           </label>
         </div>
       </div>
-      <p class="muted" id="result-meta">等待第一筆結果…（按「開始模擬」或「只跑一輪」）</p>
-      <div class="stats" id="stats"></div>
+      <p class="muted" id="result-meta">等待第一筆結果…</p>
+      <div id="live" class="live hidden"></div>
 
-      <h3 id="lines-title">各組產線表現 <span class="muted small">（點一列或用上方「組別」選單看該組細節）</span></h3>
+      <h3 class="sec">時間類</h3>
+      <div class="stats" id="k-time"></div>
+      <h3 class="sec">產能類</h3>
+      <div class="stats" id="k-cap"></div>
+      <h3 class="sec">在製品與排隊</h3>
+      <div class="stats" id="k-wip"></div>
+
+      <h3 class="sec">效率與品質 <span class="muted small">（圓餅圖，滑鼠移到扇形上看數值）</span></h3>
+      <div class="pies" id="pies"></div>
+      <p class="muted small" id="pie-note"></p>
+
+      <h3 class="sec" id="st-title">各站指標</h3>
       <div class="tbl-wrap">
-        <table class="tbl" id="lines">
+        <table class="tbl" id="st-table">
           <thead><tr>
-            <th>組別</th><th class="n">完成件數</th><th class="n">總時間</th><th class="n">產出率（件/時）</th>
-            <th class="n">平均流程時間</th><th>瓶頸站</th><th class="n">平衡效率</th>
+            <th>工站</th><th class="n">平均作業秒數</th><th>利用率</th><th class="n">閒置率</th>
+            <th class="n">平均等待</th><th class="n">平均佇列</th><th></th>
           </tr></thead>
           <tbody></tbody>
         </table>
       </div>
 
-      <div class="split">
-        <div>
-          <h3 id="bars-title">各站平均作業秒數</h3>
-          <div id="bars" class="bars"></div>
-        </div>
-        <div>
-          <h3 id="latest-title">最新完工事件</h3>
-          <table class="tbl"><thead><tr><th>組別</th><th>產品</th><th>工站</th><th class="n">秒數</th><th class="n">完工</th></tr></thead>
-            <tbody id="latest"></tbody></table>
-        </div>
+      <h3 class="sec" id="lines-title">各組產線表現 <span class="muted small">（點一列或用上方「組別」選單看該組細節）</span></h3>
+      <div class="tbl-wrap">
+        <table class="tbl" id="lines">
+          <thead><tr>
+            <th>組別</th><th class="n">完成</th><th class="n">週期時間</th><th class="n">完工時間</th>
+            <th class="n">產出率（件/時）</th><th class="n">流程時間</th><th>瓶頸站</th>
+            <th class="n">稼動率</th><th class="n">平衡效率</th><th class="n">OEE</th><th class="n">良率</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h3 class="sec" id="latest-title">最新完工事件</h3>
+      <div class="tbl-wrap">
+        <table class="tbl"><thead><tr><th>組別</th><th>產品</th><th>工站</th><th class="n">秒數</th><th class="n">完工</th></tr></thead>
+          <tbody id="latest"></tbody></table>
       </div>
     </section>
+    <div id="tip" class="tip hidden" role="tooltip"></div>
 
     <section class="card wide">
-      <h2>Python 輸出紀錄</h2>
+      <h2 id="log-title">Python 輸出紀錄</h2>
       <ul id="log" class="console log"></ul>
     </section>
   </main>

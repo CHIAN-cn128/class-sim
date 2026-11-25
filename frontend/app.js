@@ -77,11 +77,15 @@
     }
   });
 
-  // ------------------------------------------------------------ 開始 / 停止
+  // ------------------------------------------------------------ 開始 / 暫停 / 停止（只控制目前選的 Test）
+  let lastStatus = null;
+  const STATE_PILL = { running: ["pill-ok", "執行中"], paused: ["pill-wait", "已暫停"], stopped: ["pill-off", "已停止"] };
+
   async function control(path, label) {
-    $("ctrl-msg").textContent = label + "中…";
+    if (!batch) return;
+    $("ctrl-msg").textContent = `${batch} ${label}中…`;
     try {
-      const d = await api(path, { method: "POST" });
+      const d = await api(path, { method: "POST", body: JSON.stringify({ batch }) });
       $("ctrl-msg").textContent = d.message || "完成";
       await refresh();
     } catch (e) {
@@ -90,20 +94,46 @@
     }
   }
   $("btn-start").addEventListener("click", () => control("/api/start", "啟動"));
+  $("btn-pause").addEventListener("click", () => control("/api/pause", "暫停"));
   $("btn-stop").addEventListener("click", () => control("/api/stop", "停止"));
-  $("btn-once").addEventListener("click", () => control("/api/run-once", "計算"));
+
+  function testState(b) {
+    return (lastStatus && lastStatus.tests && lastStatus.tests[b]) || { state: "stopped", tick: 0 };
+  }
+
+  // 控制卡：顯示「目前選的 Test」的狀態，按鈕依狀態開關
+  function renderControl() {
+    if (!lastStatus || !batch) return;
+    const t = testState(batch);
+    const [cls, text] = STATE_PILL[t.state] || STATE_PILL.stopped;
+    setPill($("run-badge"), cls, `${batch} ${text}`);
+    const bits = [];
+    if (t.run_id) bits.push(t.run_id);
+    if (t.tick) bits.push(`第 ${t.tick} 輪`);
+    if (t.active_seconds) bits.push(`已執行 ${mmss(t.active_seconds)}`);
+    if (t.state === "running" && t.last_tick_at) bits.push(`最後執行 ${timeTW(t.last_tick_at)}`);
+    if (t.state === "stopped" && t.stop_reason) bits.push(t.stop_reason);
+    if (t.last_error) bits.push("⚠ " + t.last_error);
+    $("run-info").textContent = bits.join("・") || "這個 Test 還沒有開始模擬";
+
+    $("btn-start").textContent = t.state === "paused" ? "繼續模擬" : "開始模擬";
+    $("btn-start").disabled = t.state === "running";
+    $("btn-pause").disabled = t.state !== "running";
+    $("btn-stop").disabled = t.state === "stopped";
+
+    const others = Object.values(lastStatus.tests || {})
+      .filter((x) => x.batch !== batch && x.state !== "stopped")
+      .map((x) => `${x.batch} ${x.state === "running" ? "執行中" : "已暫停"}`);
+    $("others").textContent = others.length ? `其他 Test：${others.join("、")}` : "其他 Test 都沒有在模擬";
+    if (lastStatus.persist_ok === false) {
+      $("others").textContent += "（提醒：尚未執行 update_v4.sql，服務重啟後不會自動接續）";
+    }
+  }
 
   function renderStatus(s) {
+    lastStatus = s;
     $("token-row").classList.toggle("hidden", !s.control_token_required);
-    if (s.running) setPill($("run-badge"), "pill-ok", "執行中");
-    else setPill($("run-badge"), "pill-off", "未執行");
-    const bits = [];
-    if (s.run_id) bits.push(s.run_id);
-    if (s.tick) bits.push(`第 ${s.tick} 輪`);
-    if (s.last_tick_at) bits.push(`最後執行 ${timeTW(s.last_tick_at)}`);
-    if (!s.running && s.stop_reason) bits.push(s.stop_reason);
-    if (s.last_error) bits.push("⚠ " + s.last_error);
-    $("run-info").textContent = bits.join("・");
+    renderControl();
     $("table-count").textContent = s.event_count ? `${fmt(s.event_count)} 筆（所有 Test 合計）` : "—";
 
     // 空間用量（原始資料＋計算結果）；超過上限 → 頁面上方顯示紅色提示
@@ -206,6 +236,12 @@
   const ALL = "ALL";
 
   function fillSelect(sel, items, value) {
+    const sig = items.map((it) => it.value + "=" + it.label).join("|");
+    if (sel.dataset.sig === sig) {          // 選項沒變：只更新選到哪一個，不重建（避免正在選的時候被關掉）
+      if (sel.value !== value) sel.value = value;
+      return;
+    }
+    sel.dataset.sig = sig;
     sel.replaceChildren();
     items.forEach((it) => {
       const o = el("option", "", it.label);
@@ -215,8 +251,10 @@
     sel.value = value;
   }
 
-  // 預設選「編號最大、而且有資料的 Test」（通常就是最近一次）
+  // 預設：正在執行的 Test → 編號最大、有資料的 Test → TEST1
   function defaultBatch() {
+    const run = (lastStatus && lastStatus.running_tests) || [];
+    if (run.length) return run[run.length - 1];
     const have = TESTS.filter((t) => testIndex[t]);
     if (have.length) return have[have.length - 1];
     return Object.keys(testIndex)[0] || TESTS[0];
@@ -233,11 +271,22 @@
     latest = testCache[batch];
   }
 
-  $("sel-batch").addEventListener("change", async (e) => {
-    batch = e.target.value;
+  // 輸出紀錄只顯示這個 Test「目前（或最近一場）」的模擬，避免不同場的「第 N 次」混在一起
+  function logUrl() {
+    const rid = testState(batch).run_id;
+    return `/api/results?limit=15&batch=${encodeURIComponent(batch)}` + (rid ? `&run_id=${encodeURIComponent(rid)}` : "");
+  }
+
+  async function selectBatch(b) {
+    batch = b;
+    $("ctrl-msg").textContent = "";
+    renderControl();
     try { await loadSelectedTest(); } catch (err) { $("result-meta").textContent = "讀取失敗：" + err.message; }
     renderResult();
-  });
+    try { renderLog((await api(logUrl())).results || []); } catch (err) { /* 下一輪再試 */ }
+  }
+  $("sel-batch").addEventListener("change", (e) => selectBatch(e.target.value));
+  $("ctl-batch").addEventListener("change", (e) => selectBatch(e.target.value));
   $("sel-group").addEventListener("change", (e) => { selGroup = e.target.value; renderResult(); });
 
   function renderSource(o) {
@@ -248,16 +297,187 @@
     vals.forEach((v, i) => { dd[i].textContent = v; });
   }
 
-  function statTiles(pairs) {
-    const stats = $("stats");
-    stats.replaceChildren();
-    pairs.forEach(([k, v]) => {
-      const box = el("div", "stat");
-      box.append(el("div", "k", k), el("div", "v", typeof v === "number" ? fmt(v) : v));
-      stats.append(box);
+  // ------------------------------------------------------------ 指標卡片
+  function tiles(id, items) {
+    const box = $(id);
+    box.replaceChildren();
+    items.forEach(([k, v, sub, small]) => {
+      const t = el("div", "stat");
+      t.append(el("div", "k", k), el("div", "v" + (small ? " sm" : ""), v === null || v === undefined ? "—" : String(v)));
+      if (sub) {
+        const s = el("div", "sub");
+        if (sub instanceof Node) s.append(sub); else s.textContent = sub;
+        t.append(s);
+      }
+      box.append(t);
     });
   }
+  const f1 = (v) => Number(Number(v).toFixed(1)).toLocaleString("zh-TW");
+  const secs = (v) => (v === null || v === undefined ? "—" : `${f1(v)} 秒`);
+  const pct = (v) => (v === null || v === undefined ? "—" : `${f1(v)}%`);
 
+  // ------------------------------------------------------------ 圓餅圖（甜甜圈）
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs) {
+    const n = document.createElementNS(SVGNS, tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => n.setAttribute(k, v));
+    return n;
+  }
+  const tip = $("tip");
+  function showTip(ev, text) {
+    tip.textContent = text;
+    tip.classList.remove("hidden");
+    const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+    tip.style.left = x + "px";
+    tip.style.top = ev.clientY + 14 + "px";
+  }
+  function hideTip() { tip.classList.add("hidden"); }
+
+  const CX = 66, CY = 66, RO = 62, RI = 40;
+  function pt(r, a) { return `${(CX + r * Math.cos(a)).toFixed(2)} ${(CY + r * Math.sin(a)).toFixed(2)}`; }
+  function arcPath(a0, a1) {
+    const big = a1 - a0 > Math.PI ? 1 : 0;
+    return `M ${pt(RO, a0)} A ${RO} ${RO} 0 ${big} 1 ${pt(RO, a1)} L ${pt(RI, a1)} A ${RI} ${RI} 0 ${big} 0 ${pt(RI, a0)} Z`;
+  }
+  const RING = `M ${CX - RO} ${CY} A ${RO} ${RO} 0 1 0 ${CX + RO} ${CY} A ${RO} ${RO} 0 1 0 ${CX - RO} ${CY} Z ` +
+               `M ${CX - RI} ${CY} A ${RI} ${RI} 0 1 1 ${CX + RI} ${CY} A ${RI} ${RI} 0 1 1 ${CX - RI} ${CY} Z`;
+
+  // parts: [{label, value, color, show}]（value 是比例的數值，show 是圖例上顯示的文字）
+  function donut(title, parts, center, centerSub) {
+    const card = el("div", "pie");
+    card.append(el("h4", "", title));
+    const valid = parts.filter((x) => x.value !== null && x.value !== undefined && x.value >= 0);
+    const total = valid.reduce((a, x) => a + x.value, 0);
+    if (!valid.length || total <= 0) { card.append(el("div", "empty", "還沒有資料")); return card; }
+    const svg = svgEl("svg", { viewBox: "0 0 132 132", role: "img",
+      "aria-label": `${title}：` + valid.map((x) => `${x.label} ${x.show}`).join("、") });
+    let a0 = -Math.PI / 2;
+    valid.filter((x) => x.value > 0).forEach((x) => {
+      const frac = x.value / total;
+      const node = frac >= 0.9999
+        ? svgEl("path", { d: RING, fill: x.color, "fill-rule": "evenodd" })
+        : svgEl("path", { d: arcPath(a0, a0 + frac * 2 * Math.PI), fill: x.color,
+                          stroke: "#fff", "stroke-width": 2, "stroke-linejoin": "round" });
+      a0 += frac * 2 * Math.PI;
+      node.addEventListener("mousemove", (ev) => showTip(ev, `${x.label}：${x.show}`));
+      node.addEventListener("mouseleave", hideTip);
+      svg.append(node);
+    });
+    const t1 = svgEl("text", { x: CX, y: CY + 2, "text-anchor": "middle", class: "ctr" }); t1.textContent = center;
+    const t2 = svgEl("text", { x: CX, y: CY + 18, "text-anchor": "middle", class: "ctr-sub" }); t2.textContent = centerSub;
+    svg.append(t1, t2);
+    card.append(svg);
+    const ul = el("ul", "legend");
+    valid.forEach((x) => {
+      const li = el("li");
+      const sw = el("span", "sw"); sw.style.background = x.color;
+      li.append(sw, el("span", "", x.label), el("span", "lv", x.show));
+      ul.append(li);
+    });
+    card.append(ul);
+    return card;
+  }
+
+  function renderPies(m, hasQuality) {
+    const box = $("pies");
+    box.replaceChildren();
+    const C = { c1: "var(--c1)", c2: "var(--c2)", c3: "var(--c3)", c4: "var(--c4)", rest: "var(--rest)" };
+    // 1) 稼動率 vs 閒置率
+    box.append(donut("稼動率／閒置率", [
+      { label: "稼動（實際作業）", value: m.avg_util_pct, color: C.c1, show: pct(m.avg_util_pct) },
+      { label: "閒置", value: m.avg_idle_pct, color: C.rest, show: pct(m.avg_idle_pct) },
+    ], pct(m.avg_util_pct), "各站平均稼動率"));
+    // 2) 產線平衡效率 vs 平衡延遲
+    box.append(donut("產線平衡", [
+      { label: "平衡效率", value: m.balance_pct, color: C.c1, show: pct(m.balance_pct) },
+      { label: "平衡延遲", value: m.balance_delay_pct, color: C.rest, show: pct(m.balance_delay_pct) },
+    ], pct(m.balance_pct), "平衡效率"));
+    // 3) 流程時間組成：加工 vs 等待
+    const f = m.avg_flow_sec, pr = m.avg_flow_process_sec, wt = m.avg_flow_wait_sec;
+    const pp = f ? (pr / f) * 100 : null, wp = f ? (wt / f) * 100 : null;
+    box.append(donut("流程時間組成", [
+      { label: "加工", value: pp, color: C.c1, show: `${pct(pp)}（${mmss(pr)}）` },
+      { label: "等待", value: wp, color: C.c2, show: `${pct(wp)}（${mmss(wt)}）` },
+    ], pct(pp), "加工佔比"));
+    // 4) OEE 與三種損失（OEE ＋ 三種損失 = 100%）
+    const o = m.oee || {};
+    box.append(donut("OEE 整體設備效率", m.oee ? [
+      { label: "OEE", value: o.oee_pct, color: C.c1, show: pct(o.oee_pct) },
+      { label: "可用率損失", value: o.loss_availability_pct, color: C.c2, show: pct(o.loss_availability_pct) },
+      { label: "性能損失", value: o.loss_performance_pct, color: C.c3, show: pct(o.loss_performance_pct) },
+      { label: "品質損失", value: o.loss_quality_pct, color: C.c4, show: pct(o.loss_quality_pct) },
+    ] : [], pct(o.oee_pct), "OEE"));
+    // 5) 品質：一次良品／重工後良品／不良
+    const units = (m.good || 0) + (m.defect || 0);
+    const firstPass = (m.good || 0) - (m.good_after_rework || 0);
+    const share = (n) => (units ? (n / units) * 100 : null);
+    box.append(donut("品質（終點站完成件）", units ? [
+      { label: "一次就良品", value: share(firstPass), color: C.c1, show: `${firstPass} 件（${pct(share(firstPass))}）` },
+      { label: "重工後良品", value: share(m.good_after_rework || 0), color: C.c3, show: `${m.good_after_rework || 0} 件（${pct(share(m.good_after_rework || 0))}）` },
+      { label: "不良", value: share(m.defect || 0), color: C.c2, show: `${m.defect || 0} 件（${pct(m.defect_pct)}）` },
+    ] : [], pct(m.yield_pct), "良率"));
+
+    const notes = [];
+    if (m.oee) {
+      notes.push(`OEE ＝ 可用率 ${pct(o.availability_pct)} × 性能效率 ${pct(o.performance_pct)} × 良率 ${pct(o.quality_pct)}` +
+        (o.station_id ? `，在瓶頸站 ${o.station_id} 衡量` : "（各組平均）") +
+        `。可用率＝實際作業時間 ÷ 可用時間（資料沒有停機紀錄）；性能效率＝理想週期時間` +
+        (o.ideal_ct ? ` ${fmt(o.ideal_ct)} 秒` : "") + `（該站最快 10% 的作業秒數）× 件數 ÷ 實際作業時間。`);
+    }
+    notes.push(`重工率 ${pct(m.rework_pct)}（有重工紀錄的產品 ÷ 全部產品）。`);
+    if (!hasQuality) notes.push("目前資料的 status 都是 COMPLETED，沒有不良／重工紀錄，所以良率是 100%。" +
+      "掃碼時 status 記成 NG／DEFECT／SCRAP 會算不良，記成 REWORK 會算重工。");
+    $("pie-note").textContent = notes.join(" ");
+  }
+
+  // ------------------------------------------------------------ 各站指標表
+  function renderStations(list, bnStation) {
+    const tb = $("st-table").querySelector("tbody");
+    tb.replaceChildren();
+    const withQ = list.filter((s) => s.avg_queue !== null && s.avg_queue !== undefined);
+    const maxQ = withQ.length ? Math.max(...withQ.map((s) => s.avg_queue)) : null;
+    list.forEach((s) => {
+      const tr = el("tr");
+      const u = el("td");
+      const mini = el("div", "mini");
+      const meter = el("div", "meter"); const fill = el("div");
+      fill.style.width = Math.min(100, s.util_pct || 0) + "%"; meter.append(fill);
+      mini.append(meter, el("span", "", pct(s.util_pct)));
+      u.append(mini);
+      const flags = el("td");
+      if (s.station_id === bnStation) flags.append(el("span", "flag bn", "瓶頸"));
+      if (maxQ && s.avg_queue === maxQ && withQ.some((x) => x.avg_queue < maxQ)) { flags.append(document.createTextNode(" ")); flags.append(el("span", "flag q", "排隊最長")); }
+      tr.append(el("td", "", s.station_id), el("td", "n", secs(s.mean)), u, el("td", "n", pct(s.idle_pct)),
+        el("td", "n", s.is_start ? "—（起點站）" : secs(s.avg_wait_sec)),
+        el("td", "n", s.is_start ? "—" : (s.avg_queue === null || s.avg_queue === undefined ? "—" : `${fmt(s.avg_queue)} 套`)), flags);
+      tb.append(tr);
+    });
+    if (!list.length) {
+      const tr = el("tr"); const td = el("td", "empty", "還沒有資料"); td.colSpan = 7; tr.append(td); tb.append(tr);
+    }
+  }
+
+  function littleTag(diff) {
+    if (diff === null || diff === undefined) return null;
+    const ok = Math.abs(diff) <= 10;
+    return el("span", ok ? "ok-tag" : "warn-tag",
+      ok ? `✓ 合理（差 ${fmt(diff)}%）` : `⚠ 差 ${fmt(diff)}%，還有產品在線上或資料不完整`);
+  }
+
+  function renderLive() {
+    const t = testState(batch);
+    const live = $("live");
+    live.classList.remove("hidden");
+    if (t.state === "running") {
+      live.className = "live";
+      live.textContent = `即時更新中：Python 每 ${lastStatus ? lastStatus.interval_seconds : 5} 秒讀一次資料庫，有新資料就重新計算`;
+    } else {
+      live.className = "live idle";
+      live.textContent = t.state === "paused" ? "已暫停：顯示暫停前最後一次的計算結果" : "目前沒有在模擬：顯示最後一次的計算結果";
+    }
+  }
+
+  let lastRenderKey = null;
   function renderResult() {
     if (!batch) batch = defaultBatch();
     const p = (latest && latest.batch === batch && latest.payload) || null;
@@ -267,8 +487,13 @@
 
     // ---- 測試批次下拉選單（TEST1～TEST10，另外有資料的批次如「正式」接在後面）
     const extra = Object.keys(testIndex).filter((b) => !TESTS.includes(b)).sort();
-    fillSelect($("sel-batch"), TESTS.concat(extra).map((b) => ({
-      value: b, label: testIndex[b] ? b : `${b}（尚無資料）`,
+    const allBatches = TESTS.concat(extra);
+    fillSelect($("sel-batch"), allBatches.map((b) => ({
+      value: b, label: testIndex[b] ? b : `${b}（尚未模擬）`,
+    })), batch);
+    const mark = { running: "（執行中）", paused: "（已暫停）" };
+    fillSelect($("ctl-batch"), allBatches.map((b) => ({
+      value: b, label: b + (mark[testState(b).state] || (testIndex[b] ? "" : "（尚未模擬）")),
     })), batch);
 
     // ---- 組別下拉選單（G01～G25）
@@ -279,26 +504,53 @@
 
     $("result-meta").textContent = p
       ? `${batch}・Python 第 ${latest.tick} 輪計算（${latest.run_id}）・計算時間 ${timeTW(p.computed_at || latest.created_at)}`
-      : `${batch} 還沒有資料。學生用掃碼前端開始 ${batch} 後，Python 下一輪就會計算。`;
+      : `${batch} 還沒有計算結果。在上方「控制的 Test」選 ${batch} 並按「開始模擬」，Python 就會開始計算；` +
+        `如果學生還沒開始生產，Python 會等資料進來再算。`;
+    renderLive();
+
+    const key = [p ? latest.id : "none", latest && latest.tick, batch, selGroup].join("|");
+    if (key === lastRenderKey) return;      // 資料和選擇都沒變：不重畫（滑鼠停在圓餅圖上的提示才不會一直消失）
+    lastRenderKey = key;
+    hideTip();
 
     const line = selGroup === ALL ? null : lines.find((l) => l.group_id === selGroup);
+    const m = line || (p && selGroup === ALL ? p.summary : null);
+    const scope = line ? `${batch} ${line.group_id}` : `${batch} 全部組別（比例取各組平均）`;
 
-    // ---- 統計卡片（只用這次 Test 的資料）
-    if (!p) {
-      $("stats").replaceChildren(el("div", "notice", `${batch} 還沒有資料。`));
-    } else if (selGroup === ALL) {
-      const best = lines[0];   // Python 已依完成件數、產出率排好
-      const avgBal = lines.length ? lines.reduce((a, l) => a + (l.balance_pct || 0), 0) / lines.length : null;
-      statTiles([["有資料組數", `${lines.length} / ${GROUPS.length}`], ["完成件數", o.completed],
-        ["最高產出率（件/時）", best ? fmt(best.throughput_per_hr) : "—"], ["最高產出組", best ? best.group_id : "—"],
-        ["平均平衡效率", avgBal === null ? "—" : fmt(avgBal, "%")], ["本次平均作業秒數", fmt(o.avg_ct)]]);
-    } else if (line) {
-      statTiles([["完成件數", `${line.completed} / ${line.products}`], ["總時間", mmss(line.makespan_sec)],
-        ["產出率（件/時）", fmt(line.throughput_per_hr)], ["平均流程時間", mmss(line.avg_flow_sec)],
-        ["瓶頸站", `${line.bottleneck}・${fmt(line.bottleneck_ct)} 秒`], ["平衡效率", fmt(line.balance_pct, "%")]]);
+    // ---- 指標卡片
+    if (!m) {
+      const msg = p ? `${selGroup} 在 ${batch} 還沒有資料。` : `${batch} 還沒有計算結果。`;
+      ["k-time", "k-cap", "k-wip"].forEach((id) => $(id).replaceChildren(el("div", "notice", msg)));
+      $("pies").replaceChildren(); $("pie-note").textContent = "";
+      renderStations([], null);
     } else {
-      $("stats").replaceChildren(el("div", "notice", `${selGroup} 在 ${batch} 還沒有資料。`));
+      const slowest = (m.stations || []).reduce((a, s) => (!a || (s.mean || 0) > (a.mean || 0) ? s : a), null);
+      tiles("k-time", [
+        ["週期時間（產線）", secs(m.cycle_time_sec), slowest ? `最慢站 ${slowest.station_id}，決定多久出一張` : ""],
+        ["完工時間 Makespan", mmss(m.makespan_sec), line ? "第一張開工 → 最後一張完成" : "各組平均"],
+        ["平均流程時間", mmss(m.avg_flow_sec), `加工 ${mmss(m.avg_flow_process_sec)}＋等待 ${mmss(m.avg_flow_wait_sec)}`],
+      ]);
+      const q = (m.stations || []).filter((s) => s.avg_queue !== null && s.avg_queue !== undefined)
+        .reduce((a, s) => (!a || s.avg_queue > a.avg_queue ? s : a), null);
+      tiles("k-cap", [
+        ["產出率", m.throughput_per_hr === null ? "—" : `${fmt(m.throughput_per_hr)} 件/時`, line ? "完成件數 ÷ 完工時間" : "各組平均"],
+        ["完成件數", `${m.completed} / ${m.products}`, "終點站完工 ／ 已投料"],
+        ["瓶頸站", line ? line.bottleneck : m.most_common_bottleneck,
+          line ? `利用率最高 ${pct(line.bottleneck_util_pct)}・${secs(line.bottleneck_ct)}/件`
+               : `${m.most_common_bottleneck_groups} 組的瓶頸是這站`],
+        ["排隊最長站", q ? q.station_id : "—", q ? `平均佇列 ${fmt(q.avg_queue)} 套` : ""],
+      ]);
+      tiles("k-wip", [
+        ["目前 WIP", `${m.wip_now} 件`, "資料最後一刻還在線上的件數"],
+        ["平均 WIP（L）", m.wip_avg === null ? "—" : `${fmt(m.wip_avg)} 件`, "時間加權平均"],
+        ["Little's Law：λ × W", m.little_lambda_w === null ? "—" : `${fmt(m.little_lambda_w)} 件`, littleTag(m.little_diff_pct)],
+        ["平均等待時間", secs(m.avg_wait_sec), "每站開工前等前工序"],
+        ["平均佇列長度", m.avg_queue === null ? "—" : `${fmt(m.avg_queue)} 套`, "開工時站前齊套數"],
+      ]);
+      renderPies(m, o && o.has_quality_data);
+      renderStations(m.stations || [], line ? line.bottleneck : m.most_common_bottleneck);
     }
+    $("st-title").textContent = `${scope} 各站指標`;
 
     // ---- 各組表格（選了組別時該列會反白）
     $("lines-title").firstChild.textContent = `${batch} 各組產線表現 `;
@@ -307,35 +559,17 @@
     lines.forEach((l) => {
       const tr = el("tr", l.group_id === selGroup ? "sel" : "");
       const bn = el("td");
-      bn.append(el("span", "bn", l.bottleneck), document.createTextNode(` ${fmt(l.bottleneck_ct)} 秒`));
-      tr.append(el("td", "", l.group_id), el("td", "n", `${l.completed} / ${l.products}`), el("td", "n", mmss(l.makespan_sec)),
-        el("td", "n", fmt(l.throughput_per_hr)), el("td", "n", mmss(l.avg_flow_sec)), bn,
-        el("td", "n", fmt(l.balance_pct, "%")));
+      bn.append(el("span", "bn", l.bottleneck || "—"), document.createTextNode(l.bottleneck ? ` ${fmt(l.bottleneck_ct)} 秒` : ""));
+      tr.append(el("td", "", l.group_id), el("td", "n", `${l.completed} / ${l.products}`), el("td", "n", secs(l.cycle_time_sec)),
+        el("td", "n", mmss(l.makespan_sec)), el("td", "n", fmt(l.throughput_per_hr)), el("td", "n", mmss(l.avg_flow_sec)), bn,
+        el("td", "n", pct(l.avg_util_pct)), el("td", "n", pct(l.balance_pct)),
+        el("td", "n", pct(l.oee ? l.oee.oee_pct : null)), el("td", "n", pct(l.yield_pct)));
       tr.addEventListener("click", () => { selGroup = selGroup === l.group_id ? ALL : l.group_id; renderResult(); });
       tb.append(tr);
     });
     if (!lines.length) {
-      const tr = el("tr"); const td = el("td", "empty", `${batch} 還沒有任何組別的資料`); td.colSpan = 7; tr.append(td); tb.append(tr);
+      const tr = el("tr"); const td = el("td", "empty", `${batch} 還沒有任何組別的資料`); td.colSpan = 11; tr.append(td); tb.append(tr);
     }
-
-    // ---- 各站長條圖
-    const st = line ? line.station_ct : (selGroup === ALL && p ? p.stations || [] : []);
-    $("bars-title").textContent = line
-      ? `${batch} ${line.group_id} 各站平均作業秒數（紅色＝瓶頸）`
-      : `${batch} 全部組別各站平均作業秒數（紅色＝最慢）`;
-    const bars = $("bars");
-    bars.replaceChildren();
-    const max = Math.max(1e-9, ...st.map((s) => s.mean || 0));
-    st.forEach((s) => {
-      const row = el("div", "bar");
-      const track = el("div", "track");
-      const fill = el("div", "fill" + (s.mean === max ? " hot" : ""));
-      fill.style.width = ((s.mean || 0) / max) * 100 + "%";
-      track.append(fill);
-      row.append(el("span", "", s.station_id), track, el("span", "num", fmt(s.mean, " 秒")));
-      bars.append(row);
-    });
-    if (!st.length) bars.append(el("div", "empty", "還沒有資料"));
 
     // ---- 最新完工事件
     const evs = line ? (line.latest || []).map((x) => ({ ...x, group_id: line.group_id }))
@@ -355,21 +589,24 @@
   }
 
   function renderLog(results) {
+    $("log-title").textContent = `${batch || ""} Python 輸出紀錄`;
     const ul = $("log");
     ul.replaceChildren();
-    if (!results.length) ul.append(el("li", "", "（還沒有 Python 輸出，按「開始模擬」或「只跑一輪」）"));
+    if (!results.length) ul.append(el("li", "", `（${batch || "這個 Test"} 還沒有 Python 輸出，選好 Test 後按「開始模擬」）`));
     results.forEach((r) => ul.append(el("li", "", r.message)));
   }
 
   // ------------------------------------------------------------ 定時更新（也讓免費主機保持清醒）
   async function refresh() {
     try {
-      const [s, res, t] = await Promise.all([api("/api/status"), api("/api/results?limit=15"), api("/api/tests")]);
-      renderStatus(s);
-      renderLog(res.results || []);
+      const [s, t] = await Promise.all([api("/api/status"), api("/api/tests")]);
       testIndex = {};
       (t.tests || []).forEach((x) => { testIndex[x.batch] = x; });
+      lastStatus = s;
       if (!batch) batch = defaultBatch();
+      renderStatus(s);
+      const res = await api(logUrl());
+      renderLog(res.results || []);
       await loadSelectedTest();
       renderResult();
       if (!$("conn").classList.contains("pill-ok")) setPill($("conn"), "pill-ok", "Python 後端已連線");
