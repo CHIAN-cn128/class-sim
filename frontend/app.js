@@ -615,6 +615,12 @@
     }
   }
 
+  // 「查看程式碼」選單：點選單以外的地方就收起來
+  document.addEventListener("click", (e) => {
+    const menu = document.querySelector(".code-menu");
+    if (menu && menu.open && !menu.contains(e.target)) menu.open = false;
+  });
+
   async function boot() {
     const ok = await checkHealth();
     if (ok) await refresh();
