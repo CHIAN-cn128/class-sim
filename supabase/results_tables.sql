@@ -23,6 +23,7 @@ create table if not exists public.sim_status (
   run_id            text,
   started_at        timestamptz,
   last_event_count  integer not null default 0,
+  tests             jsonb not null default '{}'::jsonb,   -- 每個 Test 的模擬狀態
   message           text,
   updated_at        timestamptz not null default now()
 );
