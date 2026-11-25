@@ -58,14 +58,15 @@ async def lifespan(app: FastAPI):
         runner.db.check_results_schema()
         if AUTO_RESUME:
             log.info("恢復檢查：%s", runner.recover())
+        runner.start_loop()
     except DatabaseError as e:
         setup_error = str(e)
         log.error("Supabase 尚未設定好：%s", e)
     if ALLOWED_ORIGINS == ["*"]:
         log.warning("ALLOWED_ORIGINS 是 *（允許任何網站呼叫）。正式上課前請改成你的 GitHub Pages 網址。")
     yield
-    if runner and runner.running:
-        runner.stop("服務關閉")
+    if runner:
+        runner.shutdown()   # 只存狀態、不標記停止：Render 重新部署後會自動接續
 
 
 app = FastAPI(title="課堂 Python 模擬 API", version="1.0", lifespan=lifespan)
@@ -85,7 +86,7 @@ def _runner() -> SimulationRunner:
 
 def _check_token(token: str | None) -> None:
     if CONTROL_TOKEN and token != CONTROL_TOKEN:
-        raise HTTPException(403, detail="控制碼錯誤：只有老師／組長可以開始或停止模擬")
+        raise HTTPException(403, detail="控制碼錯誤：只有老師／組長可以開始、暫停或停止模擬")
 
 
 def _db_call(fn, *args, **kwargs):
@@ -119,32 +120,47 @@ def status():
     return {**r.status(), "control_token_required": bool(CONTROL_TOKEN)}
 
 
+class TestControl(BaseModel):
+    batch: str = Field(..., min_length=1, max_length=40, description="要控制的 Test，例如 TEST3")
+
+
 @app.post("/api/start")
-def start(x_control_token: str | None = Header(default=None)):
+def start(req: TestControl, x_control_token: str | None = Header(default=None)):
+    """開始（或繼續）某一次 Test 的模擬；其他 Test 不受影響"""
     _check_token(x_control_token)
-    ok, msg = _db_call(_runner().start)
-    return {"ok": ok, "message": msg, "status": _runner().status()}
+    ok, msg = _db_call(_runner().start, req.batch)
+    return {"ok": ok, "message": msg, "test": _runner().test_status(req.batch)}
+
+
+@app.post("/api/pause")
+def pause(req: TestControl, x_control_token: str | None = Header(default=None)):
+    """暫停某一次 Test 的模擬（保留輪數與執行時間，之後可以繼續）"""
+    _check_token(x_control_token)
+    ok, msg = _runner().pause(req.batch)
+    return {"ok": ok, "message": msg, "test": _runner().test_status(req.batch)}
 
 
 @app.post("/api/stop")
-def stop(x_control_token: str | None = Header(default=None)):
+def stop(req: TestControl, x_control_token: str | None = Header(default=None)):
+    """停止某一次 Test 的模擬（這一場結束，下次開始會重新開一場）"""
     _check_token(x_control_token)
-    ok, msg = _runner().stop("使用者按下停止")
-    return {"ok": ok, "message": msg, "status": _runner().status()}
+    ok, msg = _runner().stop(req.batch, "使用者按下停止")
+    return {"ok": ok, "message": msg, "test": _runner().test_status(req.batch)}
 
 
 @app.post("/api/run-once")
-def run_once(x_control_token: str | None = Header(default=None)):
-    """不啟動迴圈，只跑一輪（測試用）"""
+def run_once(req: TestControl, x_control_token: str | None = Header(default=None)):
+    """不啟動迴圈，只替某一次 Test 跑一輪（測試用，網頁上沒有這個按鈕）"""
     _check_token(x_control_token)
-    saved = _db_call(_runner().step, force=True)
-    return {"ok": True, "result": saved, "status": _runner().status()}
+    saved = _db_call(_runner().step, req.batch, force=True)
+    return {"ok": True, "result": saved, "test": _runner().test_status(req.batch)}
 
 
 @app.get("/api/results")
-def results(limit: int = Query(15, ge=1, le=100), run_id: str | None = None):
-    """最近幾輪的文字紀錄（Python 輸出紀錄）"""
-    return {"results": _db_call(_runner().db.fetch_log, limit=limit, run_id=run_id)}
+def results(limit: int = Query(15, ge=1, le=100), run_id: str | None = None,
+            batch: str | None = Query(None, max_length=40)):
+    """最近幾輪的文字紀錄（Python 輸出紀錄）；給 batch 就只看那一次 Test"""
+    return {"results": _db_call(_runner().db.fetch_log, limit=limit, run_id=run_id, batch=batch)}
 
 
 @app.get("/api/tests")

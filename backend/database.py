@@ -66,10 +66,21 @@ class SupabaseDB:
         return r.json() if r.content else None
 
     # ------------------------------------------------------------------ 生產事件（老師前端寫入的表）
-    def event_signature(self) -> tuple[int, str | None]:
-        """回傳（總筆數, 最新完工時間）。只抓 1 筆，用來快速判斷資料庫有沒有新的 insert"""
+    @staticmethod
+    def _test_filter(batch: str | None) -> dict:
+        """只抓某一次 Test 的資料：TEST3 → 產品編號 TEST3-*；正式 → 產品編號裡沒有「-」"""
+        if batch is None:
+            return {}
+        if batch == "正式":
+            return {"product_id": "not.like.*-*"}
+        return {"product_id": f"like.{batch}-*"}
+
+    def event_signature(self, batch: str | None = None) -> tuple[int, str | None]:
+        """回傳（筆數, 最新完工時間）。只抓 1 筆，用來快速判斷有沒有新的 insert；
+        給 batch 就只看那一次 Test"""
         r = self._send("GET", self.event_table, params={
             "select": "finish_time", "order": "finish_time.desc.nullslast", "limit": "1",
+            **self._test_filter(batch),
         }, prefer="count=exact")
         total = 0
         cr = r.headers.get("Content-Range", "")  # 例如 "0-0/288"
@@ -78,14 +89,14 @@ class SupabaseDB:
         rows = r.json() if r.content else []
         return total, (rows[0].get("finish_time") if rows else None)
 
-    def fetch_events(self, max_rows: int = 20000) -> list[dict]:
-        """抓整張 event 表（自動分頁），依開工時間排序"""
+    def fetch_events(self, max_rows: int = 20000, batch: str | None = None) -> list[dict]:
+        """抓 event 表（自動分頁），依開工時間排序；給 batch 就只抓那一次 Test"""
         out: list[dict] = []
         offset = 0
         while offset < max_rows:
             page = self._request("GET", self.event_table, params={
                 "select": "*", "order": "start_time.asc,id.asc",
-                "limit": str(PAGE_SIZE), "offset": str(offset),
+                "limit": str(PAGE_SIZE), "offset": str(offset), **self._test_filter(batch),
             }) or []
             out.extend(page)
             if len(page) < PAGE_SIZE:
@@ -114,12 +125,14 @@ class SupabaseDB:
         }, prefer="return=representation")
         return rows[0] if rows else None
 
-    def fetch_log(self, limit: int = 15, run_id: str | None = None) -> list[dict]:
-        """最近幾輪的文字紀錄（不含大資料）"""
+    def fetch_log(self, limit: int = 15, run_id: str | None = None, batch: str | None = None) -> list[dict]:
+        """最近幾輪的文字紀錄（不含大資料）；給 batch 就只看那一次 Test 的紀錄"""
         params = {"select": "id,run_id,tick,message,created_at", "batch": "is.null",
                   "order": "id.desc", "limit": str(limit)}
         if run_id:
             params["run_id"] = f"eq.{run_id}"
+        if batch:
+            params["payload->>test"] = f"eq.{batch}"
         return self._request("GET", "sim_results", params=params) or []
 
     def fetch_test_index(self) -> list[dict]:
@@ -170,6 +183,22 @@ class SupabaseDB:
         """同一個 Test 有新的計算結果後，舊版本的計算結果就用不到了（只刪計算結果，不碰原始資料）"""
         self._send("DELETE", "sim_results", params={"batch": f"eq.{batch}", "id": f"lt.{int(keep_id)}"},
                    prefer="return=minimal")
+
+    # ------------------------------------------------------------------ 每個 Test 的模擬狀態（存在 sim_status.tests）
+    def has_test_state_column(self) -> bool:
+        """確認已執行 update_v4.sql（sim_status 要有 tests 欄位）"""
+        try:
+            self._request("GET", "sim_status", params={"select": "tests", "id": "eq.1"})
+            return True
+        except DatabaseError:
+            return False
+
+    def load_test_states(self) -> dict:
+        rows = self._request("GET", "sim_status", params={"select": "tests", "id": "eq.1"}) or []
+        return (rows[0].get("tests") if rows else None) or {}
+
+    def save_test_states(self, states: dict, any_running: bool) -> None:
+        self.update_status(tests=states, running=any_running)
 
     # ------------------------------------------------------------------ 模擬狀態（只有一列，id = 1）
     def get_status(self) -> dict | None:
