@@ -38,6 +38,20 @@
 > 資料沒有停機紀錄與標準工時，所以 OEE 的可用率、性能效率是用上面的近似算法；
 > 目前 Excel 資料的 status 全是 COMPLETED，良率會顯示 100%。
 
+## 班級（甲班、乙班、練習資料）
+
+網頁最上面的「班級」選單決定看哪一班。設定在 `backend/classes.py`：
+
+| 班級 | 資料從哪來 | 權限 |
+|---|---|---|
+| 甲班、乙班 | 老師的 Supabase（`url` ＋ `publishable key`） | **只讀取** event 表，不會寫入或刪除 |
+| 練習資料 | 自己的 Supabase（Render 的 `SUPABASE_URL`／`SUPABASE_SECRET_KEY`） | 可匯入、可刪除 |
+
+- 所有班級的計算結果、模擬狀態都存在**自己的** Supabase，用班級代號分開（例如 `A:TEST3`），不會混在一起。
+- 各班的 Test 各自開始／暫停／停止，互不影響。
+- 甲班、乙班按「刪除整個 Test」只會刪掉系統算出來的結果；老師資料庫裡的原始紀錄不會動。
+- 新增班級：在 `classes.py` 照格式多加一列（`id`、`name`、`url`、`key`），上傳到 GitHub，Render 會自動重新部署。
+
 ## 檔案配置
 
 | 檔案 | 用途 |
@@ -48,6 +62,7 @@
 | `backend/runner.py` | 每個 Test 各自開始／暫停／停止、每 5 秒迴圈、防重複啟動、自動停止、重啟恢復 |
 | `backend/simulation.py` | **模擬計算（之後老師下新指令，主要改這裡）** |
 | `backend/database.py` | Supabase 存取 |
+| `backend/classes.py` | **班級設定**（甲班、乙班的網址與 publishable key） |
 | `backend/import_excel.py` | 把 Excel 匯入 `event` 表 |
 | `backend/check_setup.py` | 在自己電腦檢查 Supabase 是否設定好 |
 | `supabase/event_table.sql` | 建立 `event` 表（**只在自己的新專案執行**） |
