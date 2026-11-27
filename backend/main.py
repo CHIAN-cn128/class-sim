@@ -20,8 +20,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from classes import CLASSES, PRACTICE_ID
 from database import DatabaseError, SupabaseDB
-from runner import SimulationRunner
+from runner import SimulationRunner, make_key, split_key
 import csv
 import io
 
@@ -46,6 +47,8 @@ CONTROL_TOKEN = os.getenv("CONTROL_TOKEN", "").strip()  # 有設定時，開始/
 ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 
 runner: SimulationRunner | None = None
+class_errors: dict[str, str] = {}          # 班級設定有問題時的訊息（例如 key 格式不對）
+_count_cache: dict[str, tuple[float, int | None, str | None]] = {}   # 各班 event 筆數（快取 30 秒）
 setup_error: str | None = None
 
 
@@ -53,8 +56,21 @@ setup_error: str | None = None
 async def lifespan(app: FastAPI):
     global runner, setup_error
     try:
-        runner = SimulationRunner(SupabaseDB(), interval=INTERVAL_SECONDS, max_minutes=MAX_MINUTES,
-                                  only_on_new_data=ONLY_ON_NEW_DATA, storage_limit_mb=STORAGE_LIMIT_MB)
+        own = SupabaseDB()
+        sources, names = {}, {}
+        for c in CLASSES:                       # 各班級的資料庫：老師的用 publishable key 唯讀；練習資料用自己的
+            names[c["id"]] = c["name"]
+            if c.get("own"):
+                sources[c["id"]] = own
+            elif c.get("url") and c.get("key"):
+                try:
+                    sources[c["id"]] = SupabaseDB(c["url"], c["key"], read_only=True,
+                                                  event_table=c.get("table", "event"))
+                except DatabaseError as e:
+                    class_errors[c["id"]] = str(e)
+        runner = SimulationRunner(own, interval=INTERVAL_SECONDS, max_minutes=MAX_MINUTES,
+                                  only_on_new_data=ONLY_ON_NEW_DATA, storage_limit_mb=STORAGE_LIMIT_MB,
+                                  sources=sources, class_names=names)
         runner.db.check_results_schema()
         if AUTO_RESUME:
             log.info("恢復檢查：%s", runner.recover())
@@ -89,6 +105,22 @@ def _check_token(token: str | None) -> None:
         raise HTTPException(403, detail="控制碼錯誤：只有老師／組長可以開始、暫停或停止模擬")
 
 
+def _class(class_id: str) -> str:
+    """確認班級存在而且已設定好資料庫"""
+    r = _runner()
+    c = next((c for c in CLASSES if c["id"] == class_id), None)
+    if not c:
+        raise HTTPException(404, detail=f"沒有「{class_id}」這個班級")
+    if class_id not in r.sources:
+        raise HTTPException(400, detail=class_errors.get(class_id) or
+                            f"{c['name']}的資料庫還沒設定：請在 backend/classes.py 填好網址和 publishable key")
+    return class_id
+
+
+def _key(class_id: str, batch: str) -> str:
+    return make_key(_class(class_id), batch)
+
+
 def _db_call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
@@ -114,6 +146,29 @@ def hello():
     return hello_text()
 
 
+@app.get("/api/classes")
+def classes():
+    """班級清單（網頁上方的「班級」下拉選單）＋各班 event 表目前幾筆"""
+    r = _runner()
+    out = []
+    for c in CLASSES:
+        cid = c["id"]
+        ok = cid in r.sources
+        events, err = None, class_errors.get(cid)
+        if ok:
+            ts, n, e = _count_cache.get(cid, (0, None, None))
+            if time.time() - ts > 30:
+                try:
+                    n, e = r.sources[cid].event_signature()[0], None
+                except DatabaseError as ex:
+                    n, e = None, str(ex)
+                _count_cache[cid] = (time.time(), n, e)
+            events, err = n, e
+        out.append({"id": cid, "name": c["name"], "configured": ok, "read_only": not c.get("own"),
+                    "events": events, "error": err})
+    return {"classes": out, "default": next((x["id"] for x in out if x["configured"]), PRACTICE_ID)}
+
+
 @app.get("/api/status")
 def status():
     r = _runner()
@@ -122,73 +177,92 @@ def status():
 
 class TestControl(BaseModel):
     batch: str = Field(..., min_length=1, max_length=40, description="要控制的 Test，例如 TEST3")
+    class_id: str = Field(PRACTICE_ID, min_length=1, max_length=20, description="班級，例如 A（甲班）")
 
 
 @app.post("/api/start")
 def start(req: TestControl, x_control_token: str | None = Header(default=None)):
     """開始（或繼續）某一次 Test 的模擬；其他 Test 不受影響"""
     _check_token(x_control_token)
-    ok, msg = _db_call(_runner().start, req.batch)
-    return {"ok": ok, "message": msg, "test": _runner().test_status(req.batch)}
+    key = _key(req.class_id, req.batch)
+    ok, msg = _db_call(_runner().start, key)
+    return {"ok": ok, "message": msg, "test": _runner().test_status(key)}
 
 
 @app.post("/api/pause")
 def pause(req: TestControl, x_control_token: str | None = Header(default=None)):
     """暫停某一次 Test 的模擬（保留輪數與執行時間，之後可以繼續）"""
     _check_token(x_control_token)
-    ok, msg = _runner().pause(req.batch)
-    return {"ok": ok, "message": msg, "test": _runner().test_status(req.batch)}
+    key = _key(req.class_id, req.batch)
+    ok, msg = _runner().pause(key)
+    return {"ok": ok, "message": msg, "test": _runner().test_status(key)}
 
 
 @app.post("/api/stop")
 def stop(req: TestControl, x_control_token: str | None = Header(default=None)):
     """停止某一次 Test 的模擬（這一場結束，下次開始會重新開一場）"""
     _check_token(x_control_token)
-    ok, msg = _runner().stop(req.batch, "使用者按下停止")
-    return {"ok": ok, "message": msg, "test": _runner().test_status(req.batch)}
+    key = _key(req.class_id, req.batch)
+    ok, msg = _runner().stop(key, "使用者按下停止")
+    return {"ok": ok, "message": msg, "test": _runner().test_status(key)}
 
 
 @app.post("/api/run-once")
 def run_once(req: TestControl, x_control_token: str | None = Header(default=None)):
     """不啟動迴圈，只替某一次 Test 跑一輪（測試用，網頁上沒有這個按鈕）"""
     _check_token(x_control_token)
-    saved = _db_call(_runner().step, req.batch, force=True)
-    return {"ok": True, "result": saved, "test": _runner().test_status(req.batch)}
+    key = _key(req.class_id, req.batch)
+    saved = _db_call(_runner().step, key, force=True)
+    return {"ok": True, "result": saved, "test": _runner().test_status(key)}
 
 
 @app.get("/api/results")
 def results(limit: int = Query(15, ge=1, le=100), run_id: str | None = None,
-            batch: str | None = Query(None, max_length=40)):
-    """最近幾輪的文字紀錄（Python 輸出紀錄）；給 batch 就只看那一次 Test"""
-    return {"results": _db_call(_runner().db.fetch_log, limit=limit, run_id=run_id, batch=batch)}
+            batch: str | None = Query(None, max_length=40),
+            class_id: str = Query(PRACTICE_ID, max_length=20)):
+    """最近幾輪的文字紀錄（Python 輸出紀錄）；給 batch 就只看那一班的那一次 Test"""
+    key = make_key(class_id, batch) if batch else None
+    return {"results": _db_call(_runner().db.fetch_log, limit=limit, run_id=run_id, batch=key)}
 
 
 @app.get("/api/tests")
-def tests():
-    """有計算結果的 Test 清單，以及各自最新一筆結果的 id（網頁用來判斷要不要重新下載）"""
-    return {"tests": _db_call(_runner().db.fetch_test_index)}
+def tests(class_id: str = Query(PRACTICE_ID, max_length=20)):
+    """這一班有計算結果的 Test 清單，以及各自最新一筆結果的 id（網頁用來判斷要不要重新下載）"""
+    out = []
+    for t in _db_call(_runner().db.fetch_test_index):
+        c, b = split_key(t["batch"])
+        if c == class_id:
+            out.append({**t, "key": t["batch"], "batch": b})
+    return {"tests": out}
 
 
 @app.get("/api/test-result")
-def test_result(batch: str = Query(..., min_length=1, max_length=40)):
-    """某一次 Test 最新的完整計算結果（只含該次 Test 的資料）"""
-    row = _db_call(_runner().db.fetch_test_result, batch)
+def test_result(batch: str = Query(..., min_length=1, max_length=40),
+                class_id: str = Query(PRACTICE_ID, max_length=20)):
+    """某一班某一次 Test 最新的完整計算結果（只含該次 Test 的資料）"""
+    row = _db_call(_runner().db.fetch_test_result, make_key(class_id, batch))
     if not row:
         raise HTTPException(404, detail=f"{batch} 還沒有計算結果")
-    return row
+    return {**row, "key": row["batch"], "batch": batch, "class_id": class_id}
 
 
 # ---------------------------------------------------------------- 空間管理：刪除一整個 Test
 @app.get("/api/storage")
-def storage():
-    """空間用量＋每一次 Test 各佔多少（由最舊排到最新），刪除視窗用"""
+def storage(class_id: str = Query(PRACTICE_ID, max_length=20)):
+    """自己資料庫的空間用量＋這一班每一次 Test 各佔多少（由最舊排到最新），刪除視窗用
+    班級（甲班、乙班）：只列出存在自己資料庫的「計算結果」，原始資料在老師的資料庫，不會刪"""
     r = _runner()
     summary = r.check_storage()
-    tests_ = _db_call(r.db.test_usage)
-    return {**summary, "delete_enabled": bool(DELETE_PASSWORD), "tests": [
-        {"batch": t["batch"], "event_rows": t["event_rows"], "result_rows": t["result_rows"],
-         "size_mb": round((int(t["event_bytes"] or 0) + int(t["result_bytes"] or 0)) / 1048576, 3),
-         "first_start": t["first_start"]} for t in tests_]}
+    rows = []
+    for t in _db_call(r.db.test_usage):
+        c, b = split_key(t["batch"])
+        if c != class_id:
+            continue
+        rows.append({"batch": b, "event_rows": t["event_rows"], "result_rows": t["result_rows"],
+                     "size_mb": round((int(t["event_bytes"] or 0) + int(t["result_bytes"] or 0)) / 1048576, 3),
+                     "first_start": t["first_start"]})
+    return {**summary, "delete_enabled": bool(DELETE_PASSWORD), "read_only": class_id != PRACTICE_ID,
+            "tests": rows}
 
 
 EXPORT_COLUMNS = ["id", "group_id", "product_id", "station_id", "part_no", "wip_before_start",
@@ -196,20 +270,23 @@ EXPORT_COLUMNS = ["id", "group_id", "product_id", "station_id", "part_no", "wip_
 
 
 @app.get("/api/test-export")
-def test_export(batch: str = Query(..., min_length=1, max_length=40)):
-    """下載某一次 Test 的原始資料備份（CSV，可用 Excel 開啟）。刪除前建議先下載"""
-    rows = [r for r in _db_call(_runner().db.fetch_events) if batch_of(r.get("product_id")) == batch]
+def test_export(batch: str = Query(..., min_length=1, max_length=40),
+                class_id: str = Query(PRACTICE_ID, max_length=20)):
+    """下載某一班某一次 Test 的原始資料（CSV，可用 Excel 開啟）。刪除前建議先下載"""
+    src = _runner().sources[_class(class_id)]
+    rows = [r for r in _db_call(src.fetch_events, batch=batch) if batch_of(r.get("product_id")) == batch]
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=EXPORT_COLUMNS, extrasaction="ignore")
     w.writeheader()
     w.writerows(rows)
     data = "\ufeff" + buf.getvalue()          # 加 BOM，Excel 開中文才不會亂碼
     return Response(content=data.encode("utf-8"), media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{batch}_backup.csv"'})
+                    headers={"Content-Disposition": f'attachment; filename="{class_id}_{batch}_backup.csv"'})
 
 
 class DeleteTestRequest(BaseModel):
     batch: str = Field(..., min_length=1, max_length=40)
+    class_id: str = Field(PRACTICE_ID, min_length=1, max_length=20)
     password: str = Field(..., min_length=1, max_length=200)
 
 
@@ -238,11 +315,19 @@ def delete_test(req: DeleteTestRequest):
             raise HTTPException(403, detail=f"密碼錯誤（再錯 {left} 次會鎖定 10 分鐘）")
         _fail_times.clear()
 
+    key = make_key(req.class_id, req.batch)
     existing = {t["batch"] for t in _db_call(r.db.test_usage)}
-    if req.batch not in existing:
-        raise HTTPException(404, detail=f"找不到 {req.batch} 的資料")
+    if key not in existing:
+        raise HTTPException(404, detail=f"找不到 {r.label(key)} 的資料")
+    r.forget_test(key)   # 先停掉這個 Test 的模擬（等正在算的那一輪結束），刪完才不會又被寫回來
+    if req.class_id != PRACTICE_ID:
+        # 班級：只刪自己資料庫裡的計算結果與輸出紀錄；老師資料庫裡的原始資料完全不動
+        n = _db_call(r.db.delete_results_for, key)
+        log.warning("已刪除 %s 的計算結果 %s 筆", key, n)
+        return {"ok": True, "batch": req.batch, "event_deleted": 0, "result_deleted": n,
+                "message": f"已刪除 {r.label(key)} 的計算結果 {n} 筆（老師資料庫裡的原始紀錄沒有動）",
+                "storage": r.check_storage()}
     counts = _db_call(r.db.delete_test_data, req.batch)
-    r.forget_test(req.batch)
     log.warning("已刪除 %s：event %s 筆、計算結果 %s 筆", req.batch, counts["event_deleted"], counts["result_deleted"])
     return {"ok": True, "batch": req.batch, **counts,
             "message": f"已刪除 {req.batch}：原始資料 {counts['event_deleted']} 筆、計算結果 {counts['result_deleted']} 筆",

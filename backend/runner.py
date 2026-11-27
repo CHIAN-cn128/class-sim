@@ -11,6 +11,8 @@ runner.py — 模擬的「開始 / 暫停 / 停止」狀態管理（每一次 Te
 - 空間用量超過上限時「只提示、不自動刪除」（刪除見 main.py 的 /api/delete-test）
 - 某個 Test 累計執行超過 MAX_MINUTES 會自動停止（保護免費額度；暫停的時間不算）
 - 各 Test 的狀態存在 sim_status.tests；Render 重啟後會自動接續（需要 update_v4.sql）
+- 多班級：每個 Test 用「鍵」區分 —— 練習資料就是 TEST3；甲班是 A:TEST3、乙班是 B:TEST3
+  班級的原始資料只「讀」老師的資料庫；計算結果、狀態都存在自己的資料庫
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from classes import PRACTICE_ID
 from database import DatabaseError, SupabaseDB
 from simulation import analyze_test, batch_of, taipei_now
 
@@ -32,11 +35,24 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def make_key(class_id: str, batch: str) -> str:
+    """練習資料：TEST3（跟以前一樣）；其他班級：A:TEST3"""
+    return batch if class_id == PRACTICE_ID else f"{class_id}:{batch}"
+
+
+def split_key(key: str) -> tuple[str, str]:
+    if ":" in key:
+        c, b = key.split(":", 1)
+        return c, b
+    return PRACTICE_ID, key
+
+
 class TestRun:
     """一次 Test 的模擬狀態"""
 
-    def __init__(self, batch: str):
-        self.batch = batch
+    def __init__(self, key: str):
+        self.key = key
+        self.class_id, self.batch = split_key(key)
         self.state = STOPPED
         self.run_id: str | None = None
         self.tick = 0
@@ -56,6 +72,8 @@ class TestRun:
 
     def to_public(self) -> dict:
         return {
+            "key": self.key,
+            "class_id": self.class_id,
             "batch": self.batch,
             "state": self.state,
             "state_text": STATE_TEXT[self.state],
@@ -76,8 +94,8 @@ class TestRun:
                 "baseline_count": self.baseline_count}
 
     @classmethod
-    def from_saved(cls, batch: str, d: dict) -> "TestRun":
-        t = cls(batch)
+    def from_saved(cls, key: str, d: dict) -> "TestRun":
+        t = cls(key)
         t.state = d.get("state") if d.get("state") in STATE_TEXT else STOPPED
         t.run_id = d.get("run_id")
         t.tick = int(d.get("tick") or 0)
@@ -91,8 +109,11 @@ class TestRun:
 
 class SimulationRunner:
     def __init__(self, db: SupabaseDB, interval: float = 5.0, max_minutes: float = 120,
-                 only_on_new_data: bool = False, storage_limit_mb: float = 400):
-        self.db = db
+                 only_on_new_data: bool = False, storage_limit_mb: float = 400,
+                 sources: dict[str, SupabaseDB] | None = None, class_names: dict[str, str] | None = None):
+        self.db = db                                   # 自己的資料庫：存結果、狀態、練習資料
+        self.sources = sources or {PRACTICE_ID: db}    # 各班級讀 event 的資料庫
+        self.class_names = class_names or {PRACTICE_ID: "練習資料"}
         self.interval = interval
         self.max_minutes = max_minutes
         self.only_on_new_data = only_on_new_data
@@ -124,16 +145,16 @@ class SimulationRunner:
         n = 0
         while not self._quit.is_set():
             t0 = time.monotonic()
-            for batch in [b for b, t in list(self.tests.items()) if t.state == RUNNING]:
-                t = self.tests[batch]
+            for key in [k for k, t in list(self.tests.items()) if t.state == RUNNING]:
+                t = self.tests[key]
                 if self.max_minutes and t.active_seconds() >= self.max_minutes * 60:
                     self._set_stopped(t, f"累計執行超過 {self.max_minutes:g} 分鐘，自動停止")
                     continue
                 try:
-                    self.step(batch)
+                    self.step(key)
                     t.last_error = None
                 except Exception as e:   # 一輪失敗不要讓整個迴圈掛掉，下一輪再試
-                    log.exception("%s 這一輪失敗", batch)
+                    log.exception("%s 這一輪失敗", key)
                     t.last_error = str(e)
             n += 1
             if n % 6 == 1 or self.storage_checked_at is None:   # 約每 30 秒量一次空間
@@ -142,10 +163,15 @@ class SimulationRunner:
         log.info("模擬迴圈結束")
 
     # ------------------------------------------------------------------ 狀態
-    def _get(self, batch: str) -> TestRun:
-        if batch not in self.tests:
-            self.tests[batch] = TestRun(batch)
-        return self.tests[batch]
+    def _get(self, key: str) -> TestRun:
+        if key not in self.tests:
+            self.tests[key] = TestRun(key)
+        return self.tests[key]
+
+    def label(self, key: str) -> str:
+        """訊息裡顯示的名稱：練習資料就是 TEST3，班級是「甲班 TEST3」"""
+        c, b = split_key(key)
+        return b if c == PRACTICE_ID else f"{self.class_names.get(c, c)} {b}"
 
     def status(self) -> dict:
         tests = {b: t.to_public() for b, t in sorted(self.tests.items())
@@ -161,8 +187,8 @@ class SimulationRunner:
             **self.storage_summary(),
         }
 
-    def test_status(self, batch: str) -> dict:
-        return self._get(batch).to_public()
+    def test_status(self, key: str) -> dict:
+        return self._get(key).to_public()
 
     def _save(self) -> None:
         if not self.persist_ok:
@@ -174,49 +200,52 @@ class SimulationRunner:
             log.warning("無法儲存 Test 狀態：%s", e)
 
     # ------------------------------------------------------------------ 開始 / 暫停 / 停止（都只針對一個 Test）
-    def start(self, batch: str) -> tuple[bool, str]:
+    def start(self, key: str) -> tuple[bool, str]:
         with self._control_lock:
-            t = self._get(batch)
+            t = self._get(key)
+            name = self.label(key)
             if t.state == RUNNING:
-                return False, f"{batch} 已經在執行中（{t.run_id}），不會重複啟動"
+                return False, f"{name} 已經在執行中（{t.run_id}），不會重複啟動"
             if t.state == PAUSED:
                 t.state, t.resumed_at, t.stop_reason = RUNNING, _now(), None
-                msg = f"{batch} 繼續模擬（{t.run_id}，從第 {t.tick + 1} 輪接著算）"
+                msg = f"{name} 繼續模擬（{t.run_id}，從第 {t.tick + 1} 輪接著算）"
             else:
-                t.run_id = f"{batch}-{taipei_now():%m%d-%H%M%S}"
+                t.run_id = f"{key.replace(':', '-')}-{taipei_now():%m%d-%H%M%S}"
                 t.tick, t.active_sec, t.started_at = 0, 0.0, _now()
                 t.state, t.resumed_at, t.stop_reason, t.last_error = RUNNING, _now(), None, None
                 t.signature = None
-                t.baseline_count = self.db.event_signature(batch)[0]   # 「新增幾筆」從現在開始算
-                msg = f"{batch} 開始模擬（{t.run_id}），每 {self.interval:g} 秒計算一次"
+                t.baseline_count = self.sources[t.class_id].event_signature(t.batch)[0]   # 「新增幾筆」從現在開始算
+                msg = f"{name} 開始模擬（{t.run_id}），每 {self.interval:g} 秒計算一次"
             self._save()
         self.start_loop()
         return True, msg
 
-    def pause(self, batch: str) -> tuple[bool, str]:
+    def pause(self, key: str) -> tuple[bool, str]:
         with self._control_lock:
-            t = self._get(batch)
+            t = self._get(key)
+            name = self.label(key)
             if t.state != RUNNING:
-                return False, f"{batch} 目前{STATE_TEXT[t.state]}，不需要暫停"
+                return False, f"{name} 目前{STATE_TEXT[t.state]}，不需要暫停"
             t.active_sec = t.active_seconds()
             t.state, t.resumed_at = PAUSED, None
-            t.last_message = f"[{taipei_now():%H:%M:%S}] {batch} 已暫停（第 {t.tick} 輪）"
+            t.last_message = f"[{taipei_now():%H:%M:%S}] {name} 已暫停（第 {t.tick} 輪）"
             self._save()
-        return True, f"{batch} 已暫停（停在第 {t.tick} 輪），按「繼續模擬」會接著算"
+        return True, f"{name} 已暫停（停在第 {t.tick} 輪），按「繼續模擬」會接著算"
 
-    def stop(self, batch: str, reason: str = "使用者按下停止") -> tuple[bool, str]:
+    def stop(self, key: str, reason: str = "使用者按下停止") -> tuple[bool, str]:
         with self._control_lock:
-            t = self._get(batch)
+            t = self._get(key)
+            name = self.label(key)
             if t.state == STOPPED:
-                return False, f"{batch} 目前沒有在模擬"
+                return False, f"{name} 目前沒有在模擬"
             self._set_stopped(t, reason, lock=False)
-        return True, f"{batch} 模擬已停止（共 {t.tick} 輪）。下次按「開始模擬」會重新開一場"
+        return True, f"{name} 模擬已停止（共 {t.tick} 輪）。下次按「開始模擬」會重新開一場"
 
     def _set_stopped(self, t: TestRun, reason: str, lock: bool = True) -> None:
         def do():
             t.active_sec = t.active_seconds()
             t.state, t.resumed_at, t.stop_reason = STOPPED, None, reason
-            t.last_message = f"[{taipei_now():%H:%M:%S}] {t.batch} 已停止：{reason}"
+            t.last_message = f"[{taipei_now():%H:%M:%S}] {self.label(t.key)} 已停止：{reason}"
             self._save()
         if lock:
             with self._control_lock:
@@ -225,30 +254,35 @@ class SimulationRunner:
             do()
 
     # ------------------------------------------------------------------ 單一 Test 的一輪計算
-    def step(self, batch: str, force: bool = False) -> dict | None:
+    def step(self, key: str, force: bool = False) -> dict | None:
         with self._step_lock:
-            t = self._get(batch)
-            run_id = t.run_id or f"{batch}-manual"
-            sig = self.db.event_signature(batch)          # 只問「這次 Test 幾筆、最新完工時間」
+            t = self._get(key)
+            name = self.label(key)
+            src = self.sources.get(t.class_id)
+            if src is None:
+                raise DatabaseError(f"{name}：這個班級的資料庫還沒設定（classes.py）")
+            run_id = t.run_id or f"{key.replace(':', '-')}-manual"
+            sig = src.event_signature(t.batch)            # 只問「這次 Test 幾筆、最新完工時間」
             changed = sig != t.signature
             t.last_tick_at = _now()
 
             if self.only_on_new_data and not changed and not force and t.tick > 0:
-                t.last_message = f"[{taipei_now():%H:%M:%S}] {batch} 沒有新資料，略過這一輪"
+                t.last_message = f"[{taipei_now():%H:%M:%S}] {name} 沒有新資料，略過這一輪"
                 return None
 
             t.tick += 1
             base = t.baseline_count if t.baseline_count is not None else sig[0]
             new = max(0, sig[0] - base)
-            head = f"[{taipei_now():%H:%M:%S}] {batch} 第 {t.tick} 次執行："
+            head = f"[{taipei_now():%H:%M:%S}] {name} 第 {t.tick} 次執行："
             if sig[0] == 0:
                 message = head + "目前還沒有資料，等待學生開始生產"
             elif changed or force:
-                rows = [r for r in self.db.fetch_events(batch=batch) if batch_of(r.get("product_id")) == batch]
-                result = analyze_test(batch, rows)
-                saved_t = self.db.insert_result(run_id, t.tick, f"{batch} 計算結果", result, batch=batch)
+                rows = [r for r in src.fetch_events(batch=t.batch) if batch_of(r.get("product_id")) == t.batch]
+                result = analyze_test(t.batch, rows)
+                result["class_id"] = t.class_id
+                saved_t = self.db.insert_result(run_id, t.tick, f"{name} 計算結果", result, batch=key)
                 if saved_t:   # 這個 Test 只留最新一份計算結果
-                    self.db.delete_old_results(batch, int(saved_t["id"]))
+                    self.db.delete_old_results(key, int(saved_t["id"]))
                 o = result["overall"]
                 message = (head + f"讀到 {o['events']} 筆（本場累計新增 {new} 筆），{o['groups']} 組，"
                            f"完成 {o['completed']} 件，已重新計算")
@@ -256,7 +290,7 @@ class SimulationRunner:
                 message = head + f"共 {sig[0]} 筆（本場累計新增 {new} 筆），這一輪沒有新資料，結果維持不變"
             t.signature = sig
 
-            saved = self.db.insert_result(run_id, t.tick, message, {"test": batch}, batch=None)
+            saved = self.db.insert_result(run_id, t.tick, message, {"test": key}, batch=None)
             t.last_message = message
             if t.tick % 6 == 1:
                 self._save()   # 定期存一下輪數與執行時間，重啟後才接得上
@@ -284,10 +318,10 @@ class SimulationRunner:
             "storage_detail": {k: round(v["bytes"] / 1048576, 2) for k, v in self.storage.items()},
         }
 
-    def forget_test(self, batch: str) -> None:
+    def forget_test(self, key: str) -> None:
         """某個 Test 被刪除後：停止它的模擬、清掉記錄"""
         with self._step_lock:
-            t = self.tests.get(batch)
+            t = self.tests.get(key)
             if t and t.state != STOPPED:
                 self._set_stopped(t, "這個 Test 的資料已被刪除")
             if t:
@@ -300,17 +334,17 @@ class SimulationRunner:
             return "尚未執行 update_v4.sql，重啟後不會自動接續"
         saved = self.db.load_test_states()
         msgs = []
-        for batch, d in saved.items():
-            t = TestRun.from_saved(batch, d)
+        for key, d in saved.items():
+            t = TestRun.from_saved(key, d)
             if t.state == RUNNING:
                 if self.max_minutes and t.active_sec >= self.max_minutes * 60:
                     t.state, t.stop_reason = STOPPED, "服務重新啟動時已超過時限"
-                    msgs.append(f"{batch} 超過時限→停止")
+                    msgs.append(f"{key} 超過時限→停止")
                 else:
                     t.resumed_at = _now()
-                    msgs.append(f"{batch} 接續執行")
+                    msgs.append(f"{key} 接續執行")
             elif t.state == PAUSED:
-                msgs.append(f"{batch} 維持暫停")
-            self.tests[batch] = t
+                msgs.append(f"{key} 維持暫停")
+            self.tests[key] = t
         self._save()
         return "、".join(msgs) or "沒有需要恢復的模擬"

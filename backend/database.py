@@ -28,13 +28,15 @@ def utc_now_iso() -> str:
 
 class SupabaseDB:
     def __init__(self, url: str | None = None, key: str | None = None, timeout: float = 15.0,
-                 event_table: str | None = None):
+                 event_table: str | None = None, read_only: bool = False):
         self.url = (url or os.getenv("SUPABASE_URL", "")).strip().rstrip("/")
         self.key = (key or os.getenv("SUPABASE_SECRET_KEY", "")).strip()
         self.event_table = (event_table or os.getenv("EVENT_TABLE", "event")).strip()
         if not self.url or not self.key:
             raise DatabaseError("尚未設定環境變數 SUPABASE_URL 或 SUPABASE_SECRET_KEY")
-        if self.key.startswith("sb_publishable_"):
+        # read_only：班級資料庫（老師的），只用 publishable key 讀 event 表，不寫入任何東西
+        self.read_only = read_only
+        if self.key.startswith("sb_publishable_") and not read_only:
             raise DatabaseError("後端要用 secret key（sb_secret_...），不是 publishable key")
 
         self.base = f"{self.url}/rest/v1"
@@ -51,6 +53,8 @@ class SupabaseDB:
     # ------------------------------------------------------------------ 基本請求
     def _send(self, method: str, table: str, params: dict | None = None,
               body: Any = None, prefer: str | None = None) -> requests.Response:
+        if self.read_only and method != "GET":
+            raise DatabaseError("班級資料庫是唯讀的，不會寫入或刪除任何資料")   # 保護老師的資料庫
         headers = {"Prefer": prefer} if prefer else None
         try:
             r = self.session.request(method, f"{self.base}/{table}", params=params, json=body,
@@ -183,6 +187,15 @@ class SupabaseDB:
         """同一個 Test 有新的計算結果後，舊版本的計算結果就用不到了（只刪計算結果，不碰原始資料）"""
         self._send("DELETE", "sim_results", params={"batch": f"eq.{batch}", "id": f"lt.{int(keep_id)}"},
                    prefer="return=minimal")
+
+    def delete_results_for(self, key: str) -> int:
+        """只刪除某個 Test 的「計算結果」與輸出紀錄（班級的原始資料在老師的資料庫，不會動到）"""
+        n = 0
+        for params in ({"batch": f"eq.{key}"}, {"batch": "is.null", "payload->>test": f"eq.{key}"}):
+            rows = self._request("DELETE", "sim_results", params={**params, "select": "id"},
+                                 prefer="return=representation") or []
+            n += len(rows)
+        return n
 
     # ------------------------------------------------------------------ 每個 Test 的模擬狀態（存在 sim_status.tests）
     def has_test_state_column(self) -> bool:
