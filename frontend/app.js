@@ -6,7 +6,12 @@
 
   let latest = null;        // 目前選的 Test 的最新結果（只含那次 Test 的資料）
   let testIndex = {};       // 每個 Test 最新一筆結果的 id：{"TEST1": {id, ...}, ...}
-  const testCache = {};     // 已下載過的 Test 結果
+  const testCache = {};     // 已下載過的 Test 結果（鍵：班級|Test）
+  let curClass = null;      // 目前選的班級（A＝甲班、B＝乙班、practice＝練習資料）
+  let classList = [];       // 班級清單（含各班 event 筆數）
+  const qs = (o) => Object.entries(o).filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  const className = (id) => ((classList.find((c) => c.id === id) || {}).name || id);
   let batch = null;         // 目前選的測試批次（TEST1～TEST10）
   let selGroup = "ALL";     // 目前選的組別（ALL = 全部組別）
 
@@ -85,7 +90,7 @@
     if (!batch) return;
     $("ctrl-msg").textContent = `${batch} ${label}中…`;
     try {
-      const d = await api(path, { method: "POST", body: JSON.stringify({ batch }) });
+      const d = await api(path, { method: "POST", body: JSON.stringify({ batch, class_id: curClass }) });
       $("ctrl-msg").textContent = d.message || "完成";
       await refresh();
     } catch (e) {
@@ -97,8 +102,11 @@
   $("btn-pause").addEventListener("click", () => control("/api/pause", "暫停"));
   $("btn-stop").addEventListener("click", () => control("/api/stop", "停止"));
 
+  // 這一班某個 Test 的模擬狀態
   function testState(b) {
-    return (lastStatus && lastStatus.tests && lastStatus.tests[b]) || { state: "stopped", tick: 0 };
+    const all = (lastStatus && lastStatus.tests) || {};
+    return Object.values(all).find((x) => (x.class_id || "practice") === curClass && x.batch === b)
+      || { state: "stopped", tick: 0 };
   }
 
   // 控制卡：顯示「目前選的 Test」的狀態，按鈕依狀態開關
@@ -106,7 +114,7 @@
     if (!lastStatus || !batch) return;
     const t = testState(batch);
     const [cls, text] = STATE_PILL[t.state] || STATE_PILL.stopped;
-    setPill($("run-badge"), cls, `${batch} ${text}`);
+    setPill($("run-badge"), cls, `${className(curClass)} ${batch} ${text}`);
     const bits = [];
     if (t.run_id) bits.push(t.run_id);
     if (t.tick) bits.push(`第 ${t.tick} 輪`);
@@ -122,9 +130,9 @@
     $("btn-stop").disabled = t.state === "stopped";
 
     const others = Object.values(lastStatus.tests || {})
-      .filter((x) => x.batch !== batch && x.state !== "stopped")
-      .map((x) => `${x.batch} ${x.state === "running" ? "執行中" : "已暫停"}`);
-    $("others").textContent = others.length ? `其他 Test：${others.join("、")}` : "其他 Test 都沒有在模擬";
+      .filter((x) => !((x.class_id || "practice") === curClass && x.batch === batch) && x.state !== "stopped")
+      .map((x) => `${className(x.class_id || "practice")} ${x.batch} ${x.state === "running" ? "執行中" : "已暫停"}`);
+    $("others").textContent = others.length ? `其他正在模擬的：${others.join("、")}` : "其他班級／Test 都沒有在模擬";
     if (lastStatus.persist_ok === false) {
       $("others").textContent += "（提醒：尚未執行 update_v4.sql，服務重啟後不會自動接續）";
     }
@@ -134,7 +142,9 @@
     lastStatus = s;
     $("token-row").classList.toggle("hidden", !s.control_token_required);
     renderControl();
-    $("table-count").textContent = s.event_count ? `${fmt(s.event_count)} 筆（所有 Test 合計）` : "—";
+    const ci = classList.find((c) => c.id === curClass);
+    $("table-count").textContent = ci && ci.events !== null && ci.events !== undefined
+      ? `${fmt(ci.events)} 筆（${ci.name}所有 Test 合計）` : "—";
 
     // 空間用量（原始資料＋計算結果）；超過上限 → 頁面上方顯示紅色提示
     const box = $("storage");
@@ -155,6 +165,7 @@
 
   // ------------------------------------------------------------ 刪除一整個 Test（要輸入密碼）
   let delTests = [];
+  let delReadOnly = false;   // 甲班、乙班：只刪計算結果
   function delMsg(text, cls) { const m = $("del-msg"); m.className = "del-msg" + (cls ? " " + cls : ""); m.textContent = text; }
 
   function renderDelInfo() {
@@ -163,21 +174,32 @@
     info.replaceChildren();
     if (!t) { info.append(el("div", "", "目前沒有可以刪除的 Test。")); $("del-ok").disabled = true; return; }
     $("del-ok").disabled = false;
-    info.append(
-      el("div", "", `將刪除 ${t.batch} 的所有資料：`),
-      el("div", "", `・原始生產紀錄（event）${fmt(t.event_rows)} 筆`),
-      el("div", "", `・Python 計算結果 ${fmt(t.result_rows)} 筆`),
-      el("div", "", `・約可釋放 ${fmt(t.size_mb)} MB`),
-      el("div", "", "刪除後無法復原。"));
+    if (delReadOnly) {
+      info.append(
+        el("div", "", `將刪除 ${className(curClass)} ${t.batch} 的 Python 計算結果 ${fmt(t.result_rows)} 筆（約 ${fmt(t.size_mb)} MB）。`),
+        el("div", "", `${className(curClass)}的原始生產紀錄在老師的資料庫，不會被刪除；之後再按「開始模擬」可以重新算出來。`));
+    } else {
+      info.append(
+        el("div", "", `將刪除 ${t.batch} 的所有資料：`),
+        el("div", "", `・原始生產紀錄（event）${fmt(t.event_rows)} 筆`),
+        el("div", "", `・Python 計算結果 ${fmt(t.result_rows)} 筆`),
+        el("div", "", `・約可釋放 ${fmt(t.size_mb)} MB`),
+        el("div", "", "刪除後無法復原。"));
+    }
   }
 
   async function loadDelList(keep) {
-    const d = await api("/api/storage");
+    const d = await api("/api/storage?" + qs({ class_id: curClass }));
     delTests = d.tests || [];
+    delReadOnly = !!d.read_only;
+    $("del-scope").textContent = delReadOnly
+      ? `${className(curClass)}：只會刪除系統算出來的結果，不會動到老師資料庫裡的原始紀錄。`
+      : "練習資料：會刪除原始紀錄＋計算結果。";
     $("del-usage").textContent = `目前資料空間：${fmt(d.storage_used_mb)} / ${fmt(d.storage_limit_mb)} MB（${fmt(d.storage_pct)}%）`
       + (d.storage_warning ? "，空間不夠" : "");
     fillSelect($("del-batch"), delTests.map((t, i) => ({
-      value: t.batch, label: `${t.batch}${i === 0 ? "（最舊）" : ""}・${fmt(t.event_rows)} 筆・${fmt(t.size_mb)} MB`,
+      value: t.batch, label: `${t.batch}${i === 0 ? "（最舊）" : ""}・` +
+        (delReadOnly ? `計算結果 ${fmt(t.result_rows)} 筆` : `${fmt(t.event_rows)} 筆`) + `・${fmt(t.size_mb)} MB`,
     })), keep && delTests.some((t) => t.batch === keep) ? keep : (delTests[0] || {}).batch);
     renderDelInfo();
     if (!d.delete_enabled) {
@@ -201,7 +223,7 @@
     const b = $("del-batch").value;
     if (!b) return;
     const a = document.createElement("a");
-    a.href = `${API}/api/test-export?batch=${encodeURIComponent(b)}`;
+    a.href = `${API}/api/test-export?` + qs({ class_id: curClass, batch: b });
     a.download = `${b}_backup.csv`;
     document.body.append(a); a.click(); a.remove();
     delMsg(`已開始下載 ${b} 的備份。`, "ok");
@@ -215,9 +237,9 @@
     $("del-ok").disabled = true;
     delMsg(`正在刪除 ${b}…`);
     try {
-      const d = await api("/api/delete-test", { method: "POST", body: JSON.stringify({ batch: b, password: pw }) });
+      const d = await api("/api/delete-test", { method: "POST", body: JSON.stringify({ batch: b, class_id: curClass, password: pw }) });
       $("del-pw").value = "";
-      delete testCache[b];
+      delete testCache[curClass + "|" + b];
       if (batch === b) { batch = null; selGroup = "ALL"; }
       await loadDelList();
       delMsg(d.message, "ok");
@@ -253,7 +275,8 @@
 
   // 預設：正在執行的 Test → 編號最大、有資料的 Test → TEST1
   function defaultBatch() {
-    const run = (lastStatus && lastStatus.running_tests) || [];
+    const run = Object.values((lastStatus && lastStatus.tests) || {})
+      .filter((x) => (x.class_id || "practice") === curClass && x.state === "running").map((x) => x.batch).sort();
     if (run.length) return run[run.length - 1];
     const have = TESTS.filter((t) => testIndex[t]);
     if (have.length) return have[have.length - 1];
@@ -264,18 +287,46 @@
   async function loadSelectedTest() {
     const info = testIndex[batch];
     if (!info) { latest = null; return; }
-    const cached = testCache[batch];
+    const ck = curClass + "|" + batch;
+    const cached = testCache[ck];
     if (!cached || cached.id !== info.id) {
-      testCache[batch] = await api(`/api/test-result?batch=${encodeURIComponent(batch)}`);
+      testCache[ck] = await api("/api/test-result?" + qs({ class_id: curClass, batch }));
     }
-    latest = testCache[batch];
+    latest = testCache[ck];
   }
 
   // 輸出紀錄只顯示這個 Test「目前（或最近一場）」的模擬，避免不同場的「第 N 次」混在一起
   function logUrl() {
     const rid = testState(batch).run_id;
-    return `/api/results?limit=15&batch=${encodeURIComponent(batch)}` + (rid ? `&run_id=${encodeURIComponent(rid)}` : "");
+    return "/api/results?" + qs({ limit: 15, class_id: curClass, batch, run_id: rid });
   }
+
+  function renderClasses() {
+    fillSelect($("sel-class"), classList.map((c) => ({
+      value: c.id, label: c.name + (c.configured ? "" : "（尚未設定）"),
+    })), curClass);
+    const c = classList.find((x) => x.id === curClass);
+    $("class-sub").textContent = c
+      ? `GitHub Pages → Render（Python）→ Supabase（${c.name}${c.read_only ? "，唯讀" : ""}）` : "";
+    $("class-warn").classList.toggle("hidden", !c || (c.configured && !c.error));
+    if (c && !c.configured) $("class-warn").textContent = `${c.name}還沒設定資料庫：請在 backend/classes.py 填好${c.name}的網址和 publishable key。`;
+    else if (c && c.error) $("class-warn").textContent = `讀不到${c.name}的資料：${c.error}`;
+  }
+
+  async function loadClasses() {
+    const d = await api("/api/classes");
+    classList = d.classes || [];
+    if (!curClass || !classList.some((c) => c.id === curClass)) curClass = d.default || (classList[0] || {}).id;
+    renderClasses();
+  }
+
+  $("sel-class").addEventListener("change", async (e) => {
+    curClass = e.target.value;
+    batch = null; selGroup = ALL; latest = null; testIndex = {}; lastRenderKey = null;
+    $("ctrl-msg").textContent = "";
+    renderClasses();
+    await refresh();
+  });
 
   async function selectBatch(b) {
     batch = b;
@@ -290,7 +341,7 @@
   $("sel-group").addEventListener("change", (e) => { selGroup = e.target.value; renderResult(); });
 
   function renderSource(o) {
-    $("source-title").textContent = `${batch} 的資料`;
+    $("source-title").textContent = `${className(curClass)} ${batch} 的資料`;
     const dd = $("source").querySelectorAll("dd");
     const vals = o ? [fmt(o.events), fmt(o.groups), o.final_station || "—", timeTW(o.latest_finish, true)]
                    : ["—", "—", "—", "—"];
@@ -503,12 +554,12 @@
       .concat(groupList.map((g) => ({ value: g, label: has.has(g) ? g : `${g}（尚無資料）` }))), selGroup);
 
     $("result-meta").textContent = p
-      ? `${batch}・Python 第 ${latest.tick} 輪計算（${latest.run_id}）・計算時間 ${timeTW(p.computed_at || latest.created_at)}`
+      ? `${className(curClass)} ${batch}・Python 第 ${latest.tick} 輪計算（${latest.run_id}）・計算時間 ${timeTW(p.computed_at || latest.created_at)}`
       : `${batch} 還沒有計算結果。在上方「控制的 Test」選 ${batch} 並按「開始模擬」，Python 就會開始計算；` +
         `如果學生還沒開始生產，Python 會等資料進來再算。`;
     renderLive();
 
-    const key = [p ? latest.id : "none", latest && latest.tick, batch, selGroup].join("|");
+    const key = [curClass, p ? latest.id : "none", latest && latest.tick, batch, selGroup].join("|");
     if (key === lastRenderKey) return;      // 資料和選擇都沒變：不重畫（滑鼠停在圓餅圖上的提示才不會一直消失）
     lastRenderKey = key;
     hideTip();
@@ -599,7 +650,10 @@
   // ------------------------------------------------------------ 定時更新（也讓免費主機保持清醒）
   async function refresh() {
     try {
-      const [s, t] = await Promise.all([api("/api/status"), api("/api/tests")]);
+      const [s, t, cl] = await Promise.all([api("/api/status"), api("/api/tests?" + qs({ class_id: curClass })),
+        api("/api/classes")]);
+      classList = cl.classes || classList;
+      renderClasses();
       testIndex = {};
       (t.tests || []).forEach((x) => { testIndex[x.batch] = x; });
       lastStatus = s;
@@ -623,7 +677,10 @@
 
   async function boot() {
     const ok = await checkHealth();
-    if (ok) await refresh();
+    if (ok) {
+      try { await loadClasses(); } catch (e) { /* 下一輪 refresh 再試 */ }
+      await refresh();
+    }
     setInterval(() => { if (!document.hidden) refresh(); }, CFG.POLL_MS || 5000);
   }
   boot();

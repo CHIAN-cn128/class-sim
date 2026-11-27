@@ -11,9 +11,12 @@
   <header class="top">
     <div>
       <h1>椅子產線 Python 模擬</h1>
-      <p class="sub">GitHub Pages → Render（Python）→ Supabase event 表</p>
+      <p class="sub" id="class-sub">GitHub Pages → Render（Python）→ Supabase event 表</p>
     </div>
     <div class="top-right">
+      <label class="class-pick">班級
+        <select id="sel-class"><option>載入中…</option></select>
+      </label>
       <!-- 程式碼連結：GitHub repo 是公開的，任何人都能看；只有擁有者能修改 -->
       <details class="code-menu">
         <summary>&lt;/&gt; 查看程式碼</summary>
@@ -24,6 +27,7 @@
           <a href="https://github.com/CHIAN-cn128/class-sim/blob/main/backend/runner.py" target="_blank" rel="noopener">開始／暫停／停止 <code>runner.py</code></a>
           <a href="https://github.com/CHIAN-cn128/class-sim/blob/main/backend/main.py" target="_blank" rel="noopener">網頁呼叫的 API <code>main.py</code></a>
           <a href="https://github.com/CHIAN-cn128/class-sim/blob/main/backend/database.py" target="_blank" rel="noopener">讀寫資料庫 <code>database.py</code></a>
+          <a href="https://github.com/CHIAN-cn128/class-sim/blob/main/backend/classes.py" target="_blank" rel="noopener">班級設定（甲班、乙班） <code>classes.py</code></a>
           <a href="https://github.com/CHIAN-cn128/class-sim/blob/main/frontend/app.js" target="_blank" rel="noopener">網頁畫面與圓餅圖 <code>app.js</code></a>
         </div>
       </details>
@@ -36,6 +40,7 @@
     <button type="button" id="btn-alert-delete" class="btn btn-danger">選擇要刪除的 Test</button>
   </div>
 
+  <div id="class-warn" class="class-warn hidden" role="alert"></div>
   <main>
     <!-- 目標一 -->
     <section class="card">
@@ -149,6 +154,7 @@
   <!-- 刪除一整個 Test 的視窗 -->
   <dialog id="del-dialog" class="dlg">
     <h2>刪除一整個 Test 的資料</h2>
+    <p id="del-scope" class="del-scope"></p>
     <p id="del-usage" class="muted"></p>
     <label class="fld">要刪除的 Test（由最舊排到最新）
       <select id="del-batch"></select>
